@@ -16,6 +16,8 @@ dynamodb = boto3.resource('dynamodb')
 organizations = boto3.client('organizations')
 ses = boto3.client('ses')
 s3 = boto3.client('s3')
+cloudwatch = boto3.client('cloudwatch')
+sns = boto3.client('sns')
 
 DYNAMODB_TABLE = os.environ['DYNAMODB_TABLE']
 SCP_NAME = os.environ['SCP_NAME']
@@ -23,6 +25,7 @@ EMAIL_RECIPIENTS = json.loads(os.environ['EMAIL_RECIPIENTS'])
 SENDER_EMAIL = os.environ['SENDER_EMAIL']
 REQUIRE_APPROVAL = os.environ.get('REQUIRE_APPROVAL', 'true').lower() == 'true'
 BASELINE_SNAPSHOT_BUCKET = os.environ.get('BASELINE_SNAPSHOT_BUCKET', '')
+ALERT_TOPIC_ARN = os.environ.get('ALERT_TOPIC_ARN', '')
 
 SERVICE_REFERENCE_URL = "https://servicereference.us-east-1.amazonaws.com/"
 SERVICE_NAME_PATTERN = re.compile(r'^[a-z0-9\-]+$')
@@ -622,6 +625,72 @@ This is an automated security alert. Do not reply to this email.
         return False
 
 
+def publish_metrics(new_services_count: int, total_services: int, integrity_ok: bool) -> None:
+    """Publish custom metrics to CloudWatch for dashboard and alarms."""
+    try:
+        cloudwatch.put_metric_data(
+            Namespace='AWS/ServiceMonitor',
+            MetricData=[
+                {
+                    'MetricName': 'NewServicesDetected',
+                    'Value': new_services_count,
+                    'Unit': 'Count',
+                    'Timestamp': datetime.utcnow()
+                },
+                {
+                    'MetricName': 'TotalTrackedServices',
+                    'Value': total_services,
+                    'Unit': 'Count',
+                    'Timestamp': datetime.utcnow()
+                },
+                {
+                    'MetricName': 'BaselineIntegrityStatus',
+                    'Value': 1 if integrity_ok else 0,
+                    'Unit': 'None',
+                    'Timestamp': datetime.utcnow()
+                }
+            ]
+        )
+        logger.info("Published metrics to CloudWatch")
+    except Exception as e:
+        logger.error(f"Error publishing metrics to CloudWatch: {str(e)}")
+
+
+def send_integrity_alert_sns(integrity_msg: str) -> bool:
+    """Send baseline integrity violation alert via SNS for operational alerts."""
+    if not ALERT_TOPIC_ARN:
+        logger.warning("ALERT_TOPIC_ARN not configured, skipping SNS alert")
+        return False
+
+    try:
+        sns.publish(
+            TopicArn=ALERT_TOPIC_ARN,
+            Subject='CRITICAL: AWS Service Monitor - Baseline Integrity Violation',
+            Message=f"""
+SECURITY ALERT: Baseline Integrity Violation Detected
+
+{integrity_msg}
+
+Timestamp: {datetime.utcnow().isoformat()}
+
+Actions:
+1. Check CloudWatch Logs for violation details: /aws/lambda/aws-service-monitor
+2. Review CloudTrail logs for unauthorized DynamoDB modifications
+3. Verify baseline data in DynamoDB table: {DYNAMODB_TABLE}
+4. Check S3 immutable backup: s3://{BASELINE_SNAPSHOT_BUCKET}/baseline-snapshots/
+5. Consider restoring from PITR if tampering confirmed
+6. Initiate incident response procedures
+
+Dashboard: https://console.aws.amazon.com/cloudwatch/home?region={os.environ.get('AWS_REGION', 'us-east-1')}#dashboards:name=aws-service-monitor
+"""
+        )
+        logger.info("Sent baseline integrity violation alert via SNS")
+        return True
+    except Exception as e:
+        logger.error(f"Error sending SNS integrity alert: {str(e)}")
+        return False
+
+
 def send_notification_email(new_services: List[str], scp_status: str = 'unknown') -> bool:
     """Send formatted email notification about new services."""
     try:
@@ -816,6 +885,8 @@ def lambda_handler(event, context):
 
             if success:
                 logger.info(f"Baseline initialized with {len(current_services)} services")
+                # Publish metrics for baseline initialization
+                publish_metrics(0, len(current_services), True)
                 return {
                     'statusCode': 200,
                     'body': json.dumps({
@@ -841,8 +912,11 @@ def lambda_handler(event, context):
 
         if not is_valid:
             logger.critical(f"SECURITY ALERT: {integrity_msg}")
-            # Send alert email about tampering
+            # Send alert emails about tampering (email + SNS)
             send_tamper_alert_email(integrity_msg)
+            send_integrity_alert_sns(integrity_msg)
+            # Publish integrity failure metric for alarm
+            publish_metrics(0, 0, False)
             return {
                 'statusCode': 500,
                 'body': json.dumps({
@@ -907,6 +981,9 @@ def lambda_handler(event, context):
             # Send notification email
             send_notification_email(new_services_list, scp_update_status)
 
+            # Publish metrics for dashboard and alarms
+            publish_metrics(len(new_services_list), len(tracked_services) + len(new_services_list), True)
+
             response = {
                 'statusCode': 200,
                 'body': {
@@ -927,6 +1004,8 @@ def lambda_handler(event, context):
             }
         else:
             logger.info("No new services detected")
+            # Publish metrics for dashboard and alarms
+            publish_metrics(0, len(tracked_services), True)
             return {
                 'statusCode': 200,
                 'body': json.dumps({
