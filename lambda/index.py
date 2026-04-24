@@ -76,14 +76,18 @@ def initialize_baseline(services: Set[str]) -> bool:
         table = dynamodb.Table(DYNAMODB_TABLE)
         timestamp = datetime.utcnow().isoformat()
 
-        # Mark baseline as initialized
-        table.put_item(Item={
-            'service_name': BASELINE_MARKER,
-            'first_seen': timestamp,
-            'last_updated': timestamp,
-            'status': 'initialized',
-            'service_count': len(services)
-        })
+        # Use conditional write to prevent race condition
+        # This ensures only the first initialization succeeds
+        table.put_item(
+            Item={
+                'service_name': BASELINE_MARKER,
+                'first_seen': timestamp,
+                'last_updated': timestamp,
+                'status': 'initialized',
+                'service_count': len(services)
+            },
+            ConditionExpression='attribute_not_exists(service_name)'
+        )
 
         # Store all current services as baseline
         with table.batch_writer(batch_size=25) as batch:
@@ -99,8 +103,13 @@ def initialize_baseline(services: Set[str]) -> bool:
         return True
 
     except Exception as e:
-        logger.error(f"Error initializing baseline: {str(e)}")
-        return False
+        # Check if this is a race condition (baseline already exists)
+        if 'ConditionalCheckFailedException' in str(type(e).__name__):
+            logger.warning(f"Baseline already initialized (race condition prevented)")
+            return True  # Not an error - baseline is already set
+        else:
+            logger.error(f"Error initializing baseline: {str(e)}")
+            return False
 
 
 def get_tracked_services() -> Set[str]:
