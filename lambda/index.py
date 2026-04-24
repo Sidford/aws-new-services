@@ -1,7 +1,9 @@
 import json
 import os
 import boto3
-import requests
+import urllib.request
+import urllib.error
+import ssl
 import logging
 import re
 import copy
@@ -36,32 +38,57 @@ BASELINE_MARKER = "__baseline_initialized__"
 def fetch_aws_services() -> Set[str]:
     """Fetch AWS services with HTTPS certificate validation."""
     try:
-        response = requests.get(
-            SERVICE_REFERENCE_URL,
-            timeout=30,
-            verify=True  # Enforce HTTPS certificate validation
-        )
-        response.raise_for_status()
-        data = response.json()
+        logger.info(f"Fetching services from {SERVICE_REFERENCE_URL}")
+        context = ssl.create_default_context()
 
-        services = set()
-        if isinstance(data, dict):
-            if 'services' in data:
-                services = set(data['services'].keys())
-            else:
-                services = set(data.keys())
+        req = urllib.request.Request(SERVICE_REFERENCE_URL)
+        req.add_header('User-Agent', 'aws-service-monitor/1.0')
 
-        logger.info(f"Fetched {len(services)} services from AWS reference")
-        return services
+        with urllib.request.urlopen(req, timeout=30, context=context) as response:
+            content = response.read().decode('utf-8')
+            logger.info(f"Fetched {len(content)} bytes from service reference")
 
-    except requests.exceptions.SSLError as e:
-        logger.error(f"SSL certificate validation failed: {str(e)}")
-        return set()
-    except requests.exceptions.RequestException as e:
-        logger.error(f"Failed to fetch AWS services: {str(e)}")
-        return set()
-    except (json.JSONDecodeError, KeyError) as e:
-        logger.error(f"Failed to parse service reference response: {str(e)}")
+            data = json.loads(content)
+            logger.info(f"Data type: {type(data).__name__}")
+
+            services = set()
+            if isinstance(data, dict):
+                logger.info(f"Top-level dict keys: {list(data.keys())[:10]}")  # First 10 keys
+                if 'services' in data:
+                    services = set(data['services'].keys())
+                    logger.info(f"Found 'services' key with {len(services)} entries")
+                elif len(data) > 0:
+                    # Try to detect if dict values look like service names
+                    first_key = next(iter(data))
+                    first_val = data[first_key]
+                    logger.info(f"First item: {first_key} -> {type(first_val).__name__}")
+                    services = set(data.keys())
+            elif isinstance(data, list):
+                logger.info(f"Data is list with {len(data)} items")
+                if len(data) > 0:
+                    first_item = data[0]
+                    logger.info(f"First item type: {type(first_item).__name__}, content: {first_item if isinstance(first_item, (str, int)) else str(first_item)[:200]}")
+
+                services = set()
+                for item in data:
+                    if isinstance(item, dict):
+                        # Extract service name from dict - try common keys
+                        if 'service' in item:
+                            services.add(item['service'])
+                        elif 'name' in item:
+                            services.add(item['name'])
+                        elif 'id' in item:
+                            services.add(item['id'])
+                        elif 'serviceName' in item:
+                            services.add(item['serviceName'])
+                    elif isinstance(item, str):
+                        services.add(item)
+
+            logger.info(f"Fetched {len(services)} services from AWS reference")
+            return services
+
+    except Exception as e:
+        logger.error(f"Failed to fetch AWS services: {str(e)}", exc_info=True)
         return set()
 
 
@@ -203,7 +230,7 @@ def initialize_baseline(services: Set[str]) -> bool:
         )
 
         # Store all current services as baseline
-        with table.batch_writer(batch_size=25) as batch:
+        with table.batch_writer() as batch:
             for service in services:
                 batch.put_item(Item={
                     'service_name': service,
@@ -336,7 +363,7 @@ def store_new_services(services: List[str]) -> None:
         table = dynamodb.Table(DYNAMODB_TABLE)
         timestamp = datetime.utcnow().isoformat()
 
-        with table.batch_writer(batch_size=25) as batch:
+        with table.batch_writer() as batch:
             for service in services:
                 batch.put_item(Item={
                     'service_name': service,
