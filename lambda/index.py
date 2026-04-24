@@ -28,6 +28,7 @@ SENDER_EMAIL = os.environ['SENDER_EMAIL']
 REQUIRE_APPROVAL = os.environ.get('REQUIRE_APPROVAL', 'true').lower() == 'true'
 BASELINE_SNAPSHOT_BUCKET = os.environ.get('BASELINE_SNAPSHOT_BUCKET', '')
 ALERT_TOPIC_ARN = os.environ.get('ALERT_TOPIC_ARN', '')
+MANAGE_SCP_POLICY = os.environ.get('MANAGE_SCP_POLICY', 'true').lower() == 'true'
 
 SERVICE_REFERENCE_URL = "https://servicereference.us-east-1.amazonaws.com/"
 SERVICE_NAME_PATTERN = re.compile(r'^[a-z0-9\-]+$')
@@ -981,31 +982,36 @@ def lambda_handler(event, context):
             # Store new services in DynamoDB
             store_new_services(new_services_list)
 
-            # Get SCP policy
-            scp_policy = get_scp_policy()
             scp_update_status = 'not_attempted'
             scp_error = None
 
-            if scp_policy:
-                # Generate preview first
-                preview = generate_scp_preview(scp_policy, new_services_list)
+            if MANAGE_SCP_POLICY:
+                # Get SCP policy
+                scp_policy = get_scp_policy()
 
-                if REQUIRE_APPROVAL:
-                    logger.info("Approval required - storing preview for manual review")
-                    scp_update_status = 'pending_approval'
-                    # Store preview in DynamoDB for approval workflow
-                    store_pending_scp_update(preview)
+                if scp_policy:
+                    # Generate preview first
+                    preview = generate_scp_preview(scp_policy, new_services_list)
+
+                    if REQUIRE_APPROVAL:
+                        logger.info("Approval required - storing preview for manual review")
+                        scp_update_status = 'pending_approval'
+                        # Store preview in DynamoDB for approval workflow
+                        store_pending_scp_update(preview)
+                    else:
+                        # Update SCP with validation
+                        success, message = update_scp_with_services(scp_policy, new_services_list)
+                        scp_update_status = 'success' if success else 'failed'
+                        scp_error = message if not success else None
+                        logger.info(f"SCP update result: {message}")
                 else:
-                    # Update SCP with validation
-                    success, message = update_scp_with_services(scp_policy, new_services_list)
-                    scp_update_status = 'success' if success else 'failed'
-                    scp_error = message if not success else None
-                    logger.info(f"SCP update result: {message}")
+                    logger.warning(f"SCP '{SCP_NAME}' not found")
+                    scp_update_status = 'not_found'
             else:
-                logger.warning(f"SCP '{SCP_NAME}' not found")
-                scp_update_status = 'not_found'
+                logger.info("SCP management disabled - skipping policy updates")
+                scp_update_status = 'disabled'
 
-            # Send notification email
+            # Send notification email (always enabled)
             send_notification_email(new_services_list, scp_update_status)
 
             # Publish metrics for dashboard and alarms

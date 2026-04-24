@@ -314,6 +314,7 @@ resource "aws_lambda_function" "service_monitor" {
       EMAIL_RECIPIENTS          = jsonencode(var.email_recipients)
       SENDER_EMAIL              = var.sender_email
       REQUIRE_APPROVAL          = var.require_scp_approval ? "true" : "false"
+      MANAGE_SCP_POLICY         = var.manage_scp_policy ? "true" : "false"
       BASELINE_SNAPSHOT_BUCKET  = aws_s3_bucket.baseline_snapshots.id
       ALERT_TOPIC_ARN           = aws_sns_topic.alerts.arn
     }

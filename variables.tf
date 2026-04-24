@@ -32,6 +32,12 @@ variable "require_scp_approval" {
   default     = true
 }
 
+variable "manage_scp_policy" {
+  description = "Enable/disable automatic SCP policy management. When disabled, only notifications are sent."
+  type        = bool
+  default     = true
+}
+
 variable "tags" {
   description = "Common tags for all resources"
   type        = map(string)
