@@ -196,6 +196,44 @@ resource "aws_iam_role_policy" "lambda_ses_policy" {
   })
 }
 
+# IAM policy for Lambda to publish CloudWatch metrics
+resource "aws_iam_role_policy" "lambda_cloudwatch_metrics_policy" {
+  name = "lambda-cloudwatch-metrics-policy"
+  role = aws_iam_role.lambda_role.id
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Effect = "Allow"
+        Action = [
+          "cloudwatch:PutMetricData"
+        ]
+        Resource = "*"
+      }
+    ]
+  })
+}
+
+# IAM policy for Lambda to publish alerts via SNS
+resource "aws_iam_role_policy" "lambda_sns_policy" {
+  name = "lambda-sns-policy"
+  role = aws_iam_role.lambda_role.id
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Effect = "Allow"
+        Action = [
+          "sns:Publish"
+        ]
+        Resource = aws_sns_topic.alerts.arn
+      }
+    ]
+  })
+}
+
 # IAM policy for Lambda to write logs (restricted to specific log group)
 resource "aws_iam_role_policy" "lambda_logs_policy" {
   name = "lambda-logs-policy"
@@ -215,6 +253,21 @@ resource "aws_iam_role_policy" "lambda_logs_policy" {
       }
     ]
   })
+}
+
+# SNS topic for CloudWatch Alarms and operational alerts
+resource "aws_sns_topic" "alerts" {
+  name = "aws-service-monitor-alerts"
+
+  tags = var.tags
+}
+
+# SNS subscriptions for alert email recipients
+resource "aws_sns_topic_subscription" "alert_emails" {
+  count     = length(var.email_recipients)
+  topic_arn = aws_sns_topic.alerts.arn
+  protocol  = "email"
+  endpoint  = var.email_recipients[count.index]
 }
 
 # Archive the Lambda function code
@@ -243,6 +296,7 @@ resource "aws_lambda_function" "service_monitor" {
       AWS_REGION                = var.aws_region
       REQUIRE_APPROVAL          = var.require_scp_approval ? "true" : "false"
       BASELINE_SNAPSHOT_BUCKET  = aws_s3_bucket.baseline_snapshots.id
+      ALERT_TOPIC_ARN           = aws_sns_topic.alerts.arn
     }
   }
 
