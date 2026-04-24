@@ -1,0 +1,812 @@
+{
+  "metadata": {
+    "name": "AWS Service Monitor - Threat Model",
+    "description": "Threat model for AWS Service Monitor with SCP management",
+    "version": "1.0",
+    "created": "2026-04-24",
+    "updated": "2026-04-24",
+    "owner": "Security Team",
+    "assumptions": [
+      "AWS account credentials are secure",
+      "IAM policies are properly configured",
+      "AWS service endpoints are trusted",
+      "CloudTrail logging is enabled",
+      "DynamoDB encryption is enabled"
+    ]
+  },
+  "architecture": {
+    "boundaries": [
+      {
+        "id": "aws_account",
+        "name": "AWS Management Account",
+        "type": "trust_boundary",
+        "description": "AWS management account containing all resources"
+      },
+      {
+        "id": "external_services",
+        "name": "External Services",
+        "type": "trust_boundary",
+        "description": "External services outside AWS account (Service Reference, Email)"
+      }
+    ],
+    "assets": [
+      {
+        "id": "dynamodb_table",
+        "name": "DynamoDB Service Registry Table",
+        "type": "data_store",
+        "location": "AWS Account",
+        "description": "Stores baseline and tracked AWS services",
+        "sensitivity": "medium",
+        "criticality": "high",
+        "data_elements": [
+          "Service names",
+          "Baseline initialization marker",
+          "Timestamps",
+          "Service metadata"
+        ],
+        "controls": [
+          "AES-256 encryption at rest",
+          "TLS encryption in transit",
+          "DynamoDB PITR enabled",
+          "IAM access control",
+          "CloudTrail logging"
+        ]
+      },
+      {
+        "id": "lambda_function",
+        "name": "Service Monitor Lambda",
+        "type": "process",
+        "location": "AWS Account",
+        "description": "Lambda function that monitors AWS services",
+        "sensitivity": "high",
+        "criticality": "high",
+        "operations": [
+          "Fetch services from reference",
+          "Compare with baseline",
+          "Update SCP policy",
+          "Send email notifications"
+        ],
+        "controls": [
+          "IAM execution role",
+          "Least privilege permissions",
+          "Input validation",
+          "Error handling",
+          "CloudWatch logging"
+        ]
+      },
+      {
+        "id": "eventbridge_rule",
+        "name": "EventBridge Schedule Rule",
+        "type": "process",
+        "location": "AWS Account",
+        "description": "Triggers Lambda function daily",
+        "sensitivity": "low",
+        "criticality": "high",
+        "controls": [
+          "Resource-based policy",
+          "CloudTrail logging"
+        ]
+      },
+      {
+        "id": "scp_policy",
+        "name": "Service Control Policy",
+        "type": "data_store",
+        "location": "AWS Account",
+        "description": "Organization SCP that denies new services",
+        "sensitivity": "high",
+        "criticality": "critical",
+        "data_elements": [
+          "Policy document",
+          "Service denials",
+          "Organization rules"
+        ],
+        "controls": [
+          "Organizations API access control",
+          "CloudTrail audit logging",
+          "Approval workflow"
+        ]
+      },
+      {
+        "id": "service_reference",
+        "name": "AWS Service Reference",
+        "type": "external_service",
+        "location": "External",
+        "description": "AWS-hosted service reference endpoint",
+        "sensitivity": "low",
+        "criticality": "high",
+        "controls": [
+          "HTTPS/TLS",
+          "AWS managed service",
+          "Certificate validation"
+        ]
+      },
+      {
+        "id": "ses_service",
+        "name": "Amazon SES",
+        "type": "external_service",
+        "location": "External",
+        "description": "Email notification service",
+        "sensitivity": "high",
+        "criticality": "medium",
+        "data_elements": [
+          "Email recipients",
+          "Notification content",
+          "Service list"
+        ],
+        "controls": [
+          "HTTPS/TLS",
+          "Email verification",
+          "Rate limiting"
+        ]
+      },
+      {
+        "id": "cloudwatch_logs",
+        "name": "CloudWatch Logs",
+        "type": "data_store",
+        "location": "AWS Account",
+        "description": "Lambda execution logs",
+        "sensitivity": "medium",
+        "criticality": "medium",
+        "data_elements": [
+          "Lambda execution details",
+          "Error messages",
+          "Service names"
+        ],
+        "controls": [
+          "Encryption at rest",
+          "14-day retention",
+          "CloudTrail logging",
+          "IAM access control"
+        ]
+      },
+      {
+        "id": "cloudtrail",
+        "name": "CloudTrail Logs",
+        "type": "data_store",
+        "location": "AWS Account",
+        "description": "API call audit trail",
+        "sensitivity": "high",
+        "criticality": "critical",
+        "data_elements": [
+          "API calls",
+          "User actions",
+          "Resource modifications"
+        ],
+        "controls": [
+          "Encryption at rest",
+          "CloudTrail organization trail",
+          "S3 versioning"
+        ]
+      }
+    ],
+    "data_flows": [
+      {
+        "id": "flow_1",
+        "name": "Service Reference Fetch",
+        "source": "lambda_function",
+        "destination": "service_reference",
+        "protocol": "HTTPS",
+        "data": "HTTP GET request",
+        "classification": "low",
+        "controls": [
+          "TLS 1.2+",
+          "Certificate validation",
+          "Timeout protection"
+        ],
+        "threats": [
+          "T001_mitm_attack",
+          "T002_service_unavailable"
+        ]
+      },
+      {
+        "id": "flow_2",
+        "name": "DynamoDB Read/Write",
+        "source": "lambda_function",
+        "destination": "dynamodb_table",
+        "protocol": "AWS API",
+        "data": "Service records, baseline marker",
+        "classification": "medium",
+        "controls": [
+          "TLS encryption",
+          "IAM authentication",
+          "Encryption at rest",
+          "DynamoDB encryption"
+        ],
+        "threats": [
+          "T003_unauthorized_access",
+          "T004_data_tampering",
+          "T008_service_disruption"
+        ]
+      },
+      {
+        "id": "flow_3",
+        "name": "SCP Policy Update",
+        "source": "lambda_function",
+        "destination": "scp_policy",
+        "protocol": "AWS Organizations API",
+        "data": "Policy document JSON",
+        "classification": "critical",
+        "controls": [
+          "TLS encryption",
+          "IAM authentication",
+          "Conditional writes",
+          "Policy validation",
+          "CloudTrail logging"
+        ],
+        "threats": [
+          "T005_unauthorized_policy_change",
+          "T006_broken_policy_deployment",
+          "T007_policy_bypass"
+        ]
+      },
+      {
+        "id": "flow_4",
+        "name": "Email Notification",
+        "source": "lambda_function",
+        "destination": "ses_service",
+        "protocol": "HTTPS",
+        "data": "Email with service list",
+        "classification": "medium",
+        "controls": [
+          "TLS encryption",
+          "Recipient verification",
+          "Rate limiting"
+        ],
+        "threats": [
+          "T009_email_injection",
+          "T010_information_disclosure"
+        ]
+      },
+      {
+        "id": "flow_5",
+        "name": "EventBridge Trigger",
+        "source": "eventbridge_rule",
+        "destination": "lambda_function",
+        "protocol": "AWS Event",
+        "data": "Scheduled event",
+        "classification": "low",
+        "controls": [
+          "EventBridge policy",
+          "Lambda permissions"
+        ],
+        "threats": [
+          "T011_unauthorized_invocation",
+          "T012_trigger_manipulation"
+        ]
+      },
+      {
+        "id": "flow_6",
+        "name": "CloudWatch Logging",
+        "source": "lambda_function",
+        "destination": "cloudwatch_logs",
+        "protocol": "AWS API",
+        "data": "Log entries, service names",
+        "classification": "low",
+        "controls": [
+          "TLS encryption",
+          "IAM authentication",
+          "Log retention"
+        ],
+        "threats": [
+          "T013_log_tampering",
+          "T014_information_disclosure"
+        ]
+      }
+    ]
+  },
+  "threats": [
+    {
+      "id": "T001_mitm_attack",
+      "title": "Man-in-the-Middle Attack on Service Reference",
+      "category": "spoofing",
+      "description": "Attacker intercepts HTTPS connection to service reference and injects malicious service list",
+      "affected_assets": [
+        "lambda_function",
+        "service_reference"
+      ],
+      "affected_flow": "flow_1",
+      "severity": "high",
+      "likelihood": "low",
+      "risk_rating": "medium",
+      "attack_vector": "Network",
+      "attack_complexity": "high",
+      "privileges_required": "none",
+      "user_interaction": "none",
+      "existing_controls": [
+        "TLS 1.2+ enforcement",
+        "HTTPS certificate validation",
+        "AWS managed service"
+      ],
+      "residual_risk": "low",
+      "mitigations": [
+        "Enforce TLS 1.2+",
+        "Validate SSL certificates",
+        "Pin AWS service endpoint",
+        "Implement DNS validation"
+      ],
+      "impact": "Corrupted service list, false positives in SCP updates",
+      "recommendation": "ACCEPT - Risk is low due to TLS/cert validation"
+    },
+    {
+      "id": "T002_service_unavailable",
+      "title": "Service Reference Unavailability",
+      "category": "denial_of_service",
+      "description": "Service reference endpoint is unavailable, Lambda cannot fetch services",
+      "affected_assets": [
+        "lambda_function",
+        "service_reference"
+      ],
+      "affected_flow": "flow_1",
+      "severity": "medium",
+      "likelihood": "low",
+      "risk_rating": "low",
+      "attack_vector": "Network",
+      "attack_complexity": "high",
+      "privileges_required": "none",
+      "user_interaction": "none",
+      "existing_controls": [
+        "Error handling in Lambda",
+        "Timeout protection (30s)",
+        "CloudWatch logging"
+      ],
+      "residual_risk": "low",
+      "mitigations": [
+        "Implement retry logic",
+        "Add exponential backoff",
+        "Cache previous service list",
+        "CloudWatch alarm on failures"
+      ],
+      "impact": "Delayed service detection, missing monitoring cycle",
+      "recommendation": "MITIGATE - Add retry logic and caching"
+    },
+    {
+      "id": "T003_unauthorized_access",
+      "title": "Unauthorized DynamoDB Access",
+      "category": "tampering",
+      "description": "User with IAM permissions modifies DynamoDB table, adding/removing services",
+      "affected_assets": [
+        "dynamodb_table"
+      ],
+      "affected_flow": "flow_2",
+      "severity": "high",
+      "likelihood": "medium",
+      "risk_rating": "medium",
+      "attack_vector": "Network",
+      "attack_complexity": "low",
+      "privileges_required": "low",
+      "user_interaction": "none",
+      "existing_controls": [
+        "IAM role restrictions",
+        "DynamoDB encryption at rest",
+        "CloudTrail logging"
+      ],
+      "residual_risk": "medium",
+      "mitigations": [
+        "Enable MFA for sensitive operations",
+        "Use resource-based policies",
+        "Add KMS encryption with key policies",
+        "Baseline integrity checksums",
+        "CloudWatch alarm on deletion"
+      ],
+      "impact": "Corrupted service registry, missed detections",
+      "recommendation": "MITIGATE - Enable KMS, add MFA, integrity checks"
+    },
+    {
+      "id": "T004_data_tampering",
+      "title": "DynamoDB Data Tampering",
+      "category": "tampering",
+      "description": "Attacker modifies baseline marker to reinitialize baseline, hiding newly added services",
+      "affected_assets": [
+        "dynamodb_table"
+      ],
+      "affected_flow": "flow_2",
+      "severity": "high",
+      "likelihood": "low",
+      "risk_rating": "medium",
+      "attack_vector": "Network",
+      "attack_complexity": "low",
+      "privileges_required": "low",
+      "user_interaction": "none",
+      "existing_controls": [
+        "Conditional writes",
+        "CloudTrail logging",
+        "DynamoDB PITR"
+      ],
+      "residual_risk": "low",
+      "mitigations": [
+        "Conditional write protection (already implemented)",
+        "Baseline checksum verification",
+        "S3 immutable snapshot",
+        "CloudTrail monitoring"
+      ],
+      "impact": "Loss of detection capability, security bypass",
+      "recommendation": "ACCEPT - Conditional writes provide protection"
+    },
+    {
+      "id": "T005_unauthorized_policy_change",
+      "title": "Unauthorized SCP Policy Modification",
+      "category": "tampering",
+      "description": "Attacker modifies SCP policy directly, bypassing monitoring and approval",
+      "affected_assets": [
+        "scp_policy"
+      ],
+      "affected_flow": "flow_3",
+      "severity": "critical",
+      "likelihood": "medium",
+      "risk_rating": "high",
+      "attack_vector": "Network",
+      "attack_complexity": "low",
+      "privileges_required": "medium",
+      "user_interaction": "none",
+      "existing_controls": [
+        "IAM permissions restricted",
+        "CloudTrail logging",
+        "Approval workflow"
+      ],
+      "residual_risk": "medium",
+      "mitigations": [
+        "Restrict organizations:UpdatePolicy permission",
+        "Require MFA for policy changes",
+        "Implement policy versioning",
+        "Policy drift detection",
+        "CloudWatch alarm on unexpected changes"
+      ],
+      "impact": "Policy bypass, security control circumvented",
+      "recommendation": "MITIGATE - Add MFA requirement, drift detection, stricter permissions"
+    },
+    {
+      "id": "T006_broken_policy_deployment",
+      "title": "Broken SCP Policy Deployment",
+      "category": "tampering",
+      "description": "Invalid SCP policy JSON is deployed, breaking organization policies",
+      "affected_assets": [
+        "scp_policy",
+        "lambda_function"
+      ],
+      "affected_flow": "flow_3",
+      "severity": "high",
+      "likelihood": "very_low",
+      "risk_rating": "low",
+      "attack_vector": "Local",
+      "attack_complexity": "high",
+      "privileges_required": "high",
+      "user_interaction": "none",
+      "existing_controls": [
+        "Policy syntax validation",
+        "Approval workflow"
+      ],
+      "residual_risk": "very_low",
+      "mitigations": [
+        "Validate policy syntax before deployment",
+        "Test policy in non-prod environment",
+        "Rollback procedure documented"
+      ],
+      "impact": "Organization policies fail to enforce, compliance violation",
+      "recommendation": "ACCEPT - Validation already implemented"
+    },
+    {
+      "id": "T007_policy_bypass",
+      "title": "SCP Policy Bypass",
+      "category": "elevation_of_privilege",
+      "description": "Attacker finds way to bypass SCP deny policies through Organization structure manipulation",
+      "affected_assets": [
+        "scp_policy"
+      ],
+      "affected_flow": "flow_3",
+      "severity": "critical",
+      "likelihood": "low",
+      "risk_rating": "high",
+      "attack_vector": "Network",
+      "attack_complexity": "high",
+      "privileges_required": "high",
+      "user_interaction": "none",
+      "existing_controls": [
+        "SCP policy restrictions",
+        "IAM policies"
+      ],
+      "residual_risk": "medium",
+      "mitigations": [
+        "Monitor organization structure changes",
+        "Restrict organizational unit creation",
+        "Restrict account attachment/movement",
+        "CloudTrail monitoring",
+        "Regular SCP audit"
+      ],
+      "impact": "SCP policies bypassed, compliance violation",
+      "recommendation": "MITIGATE - Monitor org structure, restrict OU/account changes"
+    },
+    {
+      "id": "T008_service_disruption",
+      "title": "Denial of Service on DynamoDB",
+      "category": "denial_of_service",
+      "description": "Attacker causes high API call volume to DynamoDB, degrading performance",
+      "affected_assets": [
+        "dynamodb_table"
+      ],
+      "affected_flow": "flow_2",
+      "severity": "medium",
+      "likelihood": "low",
+      "risk_rating": "low",
+      "attack_vector": "Network",
+      "attack_complexity": "medium",
+      "privileges_required": "none",
+      "user_interaction": "none",
+      "existing_controls": [
+        "DynamoDB on-demand pricing (auto-scales)",
+        "CloudWatch monitoring"
+      ],
+      "residual_risk": "low",
+      "mitigations": [
+        "DynamoDB on-demand auto-scaling (already enabled)",
+        "CloudWatch alarm on throttles",
+        "DAX caching (optional)",
+        "Rate limiting on API calls"
+      ],
+      "impact": "Degraded service performance, potential cost increase",
+      "recommendation": "ACCEPT - On-demand scaling handles this"
+    },
+    {
+      "id": "T009_email_injection",
+      "title": "Email Injection Attack",
+      "category": "injection",
+      "description": "Service names contain email injection payloads, modifying email content",
+      "affected_assets": [
+        "lambda_function",
+        "ses_service"
+      ],
+      "affected_flow": "flow_4",
+      "severity": "medium",
+      "likelihood": "low",
+      "risk_rating": "low",
+      "attack_vector": "Network",
+      "attack_complexity": "medium",
+      "privileges_required": "none",
+      "user_interaction": "none",
+      "existing_controls": [
+        "Service name validation",
+        "HTML escaping in email"
+      ],
+      "residual_risk": "very_low",
+      "mitigations": [
+        "Validate service names against AWS pattern",
+        "HTML escape all dynamic content",
+        "Use templating engine with auto-escape",
+        "Content Security Policy headers"
+      ],
+      "impact": "Email content modification, phishing attacks",
+      "recommendation": "ACCEPT - Validation and escaping implemented"
+    },
+    {
+      "id": "T010_information_disclosure",
+      "title": "Service List Information Disclosure",
+      "category": "information_disclosure",
+      "description": "Email notifications reveal organization's service usage patterns",
+      "affected_assets": [
+        "ses_service"
+      ],
+      "affected_flow": "flow_4",
+      "severity": "medium",
+      "likelihood": "medium",
+      "risk_rating": "medium",
+      "attack_vector": "Network",
+      "attack_complexity": "low",
+        "privileges_required": "none",
+      "user_interaction": "required",
+      "existing_controls": [
+        "Email recipient verification (SES)"
+      ],
+      "residual_risk": "medium",
+      "mitigations": [
+        "Use distribution lists instead of individual emails",
+        "Encrypt emails end-to-end (optional)",
+        "Limit email recipients to authorized personnel",
+        "Monitor email forwarding"
+      ],
+      "impact": "Service usage patterns revealed to unauthorized parties",
+      "recommendation": "MITIGATE - Limit email recipients, use DLs"
+    },
+    {
+      "id": "T011_unauthorized_invocation",
+      "title": "Unauthorized Lambda Invocation",
+      "category": "elevation_of_privilege",
+      "description": "Attacker invokes Lambda function outside of scheduled time, triggering unwanted actions",
+      "affected_assets": [
+        "lambda_function",
+        "eventbridge_rule"
+      ],
+      "affected_flow": "flow_5",
+      "severity": "high",
+      "likelihood": "low",
+      "risk_rating": "medium",
+      "attack_vector": "Network",
+      "attack_complexity": "low",
+      "privileges_required": "low",
+      "user_interaction": "none",
+      "existing_controls": [
+        "Lambda resource policy",
+        "IAM roles",
+        "CloudTrail logging"
+      ],
+      "residual_risk": "low",
+      "mitigations": [
+        "Restrict Lambda invoke permissions",
+        "EventBridge rule policy validation",
+        "CloudWatch alarm on unexpected invocations"
+      ],
+      "impact": "Unintended SCP changes, unexpected policy updates",
+      "recommendation": "ACCEPT - IAM controls prevent unauthorized invocation"
+    },
+    {
+      "id": "T012_trigger_manipulation",
+      "title": "EventBridge Schedule Manipulation",
+      "category": "tampering",
+      "description": "Attacker modifies EventBridge schedule to trigger Lambda more frequently or disable it",
+      "affected_assets": [
+        "eventbridge_rule"
+      ],
+      "affected_flow": "flow_5",
+      "severity": "high",
+      "likelihood": "low",
+      "risk_rating": "medium",
+      "attack_vector": "Network",
+      "attack_complexity": "low",
+      "privileges_required": "medium",
+      "user_interaction": "none",
+      "existing_controls": [
+        "IAM permissions",
+        "CloudTrail logging"
+      ],
+      "residual_risk": "low",
+      "mitigations": [
+        "Restrict events:PutRule permission",
+        "Require MFA for EventBridge changes",
+        "CloudWatch alarm on rule modifications"
+      ],
+      "impact": "Frequent unintended execution or no execution, monitoring failures",
+      "recommendation": "MITIGATE - Restrict permissions, add MFA"
+    },
+    {
+      "id": "T013_log_tampering",
+      "title": "CloudWatch Log Tampering",
+      "category": "tampering",
+      "description": "Attacker deletes CloudWatch logs to hide evidence of malicious activities",
+      "affected_assets": [
+        "cloudwatch_logs"
+      ],
+      "affected_flow": "flow_6",
+      "severity": "high",
+      "likelihood": "low",
+      "risk_rating": "medium",
+      "attack_vector": "Network",
+      "attack_complexity": "low",
+      "privileges_required": "medium",
+      "user_interaction": "none",
+      "existing_controls": [
+        "IAM permissions",
+        "CloudTrail logging",
+        "Log retention policy"
+      ],
+      "residual_risk": "low",
+      "mitigations": [
+        "Restrict logs:DeleteLogGroup permission",
+        "Export logs to S3 for immutable storage",
+        "CloudTrail monitoring"
+      ],
+      "impact": "Evidence of attacks hidden, audit trail compromised",
+      "recommendation": "MITIGATE - Export to S3, restrict deletion permissions"
+    },
+    {
+      "id": "T014_information_disclosure",
+      "title": "Sensitive Information in Logs",
+      "category": "information_disclosure",
+      "description": "CloudWatch logs contain sensitive information (service names, email addresses)",
+      "affected_assets": [
+        "cloudwatch_logs"
+      ],
+      "affected_flow": "flow_6",
+      "severity": "medium",
+      "likelihood": "medium",
+      "risk_rating": "medium",
+      "attack_vector": "Network",
+      "attack_complexity": "low",
+      "privileges_required": "low",
+      "user_interaction": "none",
+      "existing_controls": [
+        "IAM access control",
+        "Encryption at rest"
+      ],
+      "residual_risk": "medium",
+      "mitigations": [
+        "Restrict logs:GetLogEvents permission",
+        "Remove sensitive data from logs",
+        "Use log filtering/masking",
+        "Reduce log retention period"
+      ],
+      "impact": "Service architecture revealed, internal details exposed",
+      "recommendation": "MITIGATE - Restrict log access, reduce retention period"
+    }
+  ],
+  "risk_summary": {
+    "total_threats": 14,
+    "critical_threats": 2,
+    "high_threats": 6,
+    "medium_threats": 5,
+    "low_threats": 1,
+    "mitigated_threats": 9,
+    "accepted_threats": 5,
+    "overall_risk_rating": "medium",
+    "risk_trend": "acceptable"
+  },
+  "recommendations": {
+    "phase_1_critical": [
+      {
+        "priority": 1,
+        "title": "Implement Policy Drift Detection",
+        "threat": "T005_unauthorized_policy_change",
+        "effort": "medium",
+        "cost": 500,
+        "description": "Detect unauthorized changes to SCP policy"
+      },
+      {
+        "priority": 2,
+        "title": "Enable KMS Encryption for DynamoDB",
+        "threat": "T003_unauthorized_access",
+        "effort": "low",
+        "cost": 200,
+        "description": "Customer-managed encryption keys for DynamoDB"
+      },
+      {
+        "priority": 3,
+        "title": "Add MFA for Organization Changes",
+        "threat": "T005_unauthorized_policy_change",
+        "effort": "medium",
+        "cost": 0,
+        "description": "Require MFA for SCP modifications"
+      }
+    ],
+    "phase_2_important": [
+      {
+        "priority": 1,
+        "title": "Baseline Integrity Verification",
+        "threat": "T004_data_tampering",
+        "effort": "medium",
+        "cost": 100,
+        "description": "Checksum verification for baseline data"
+      },
+      {
+        "priority": 2,
+        "title": "Export Logs to S3",
+        "threat": "T013_log_tampering",
+        "effort": "low",
+        "cost": 50,
+        "description": "Immutable log storage for audit trail"
+      },
+      {
+        "priority": 3,
+        "title": "EventBridge Rule Monitoring",
+        "threat": "T012_trigger_manipulation",
+        "effort": "low",
+        "cost": 100,
+        "description": "Alert on EventBridge rule changes"
+      }
+    ],
+    "phase_3_nice_to_have": [
+      {
+        "priority": 1,
+        "title": "Service Name Encryption",
+        "threat": "T010_information_disclosure",
+        "effort": "high",
+        "cost": 500,
+        "description": "Encrypt service names in logs/emails"
+      },
+      {
+        "priority": 2,
+        "title": "Multi-Region Setup",
+        "threat": "T002_service_unavailable",
+        "effort": "high",
+        "cost": 5000,
+        "description": "Failover capability across regions"
+      }
+    ]
+  }
+}
