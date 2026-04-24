@@ -22,3 +22,13 @@ output "lambda_role_arn" {
   description = "ARN of the Lambda execution role"
   value       = aws_iam_role.lambda_role.arn
 }
+
+output "baseline_snapshot_bucket" {
+  description = "S3 bucket for immutable baseline snapshots (T004 mitigation)"
+  value       = aws_s3_bucket.baseline_snapshots.id
+}
+
+output "baseline_snapshot_bucket_arn" {
+  description = "ARN of the baseline snapshot bucket"
+  value       = aws_s3_bucket.baseline_snapshots.arn
+}

@@ -11,3 +11,6 @@ terraform {
 provider "aws" {
   region = var.aws_region
 }
+
+# Get current AWS account ID for S3 bucket naming
+data "aws_caller_identity" "current" {}
