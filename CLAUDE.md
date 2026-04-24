@@ -93,24 +93,27 @@ mypy lambda/index.py
 ### AWS Operations
 
 ```bash
-# Manually invoke Lambda function
+# Manually invoke Lambda function (replace region with your deployment region)
 aws lambda invoke \
   --function-name aws-service-monitor \
-  --region us-east-1 \
+  --region eu-west-2 \
   response.json && cat response.json
 
-# View Lambda logs in real-time
-aws logs tail /aws/lambda/aws-service-monitor --follow
+# View Lambda logs in real-time (tail with --follow or --since 5m for recent logs)
+aws logs tail /aws/lambda/aws-service-monitor --region eu-west-2 --follow
 
-# Check DynamoDB registry contents
-aws dynamodb scan --table-name aws-service-monitor-registry
+# Check DynamoDB registry contents (includes baseline marker and tracked services)
+aws dynamodb scan --table-name aws-service-monitor-registry --region eu-west-2
 
-# Verify SCP policy
+# Verify SCP policy (if SCP management is enabled)
 aws organizations list-policies --filter SERVICE_CONTROL_POLICY
 aws organizations describe-policy --policy-id <policy-id>
 
-# List verified email addresses in SES
-aws ses list-verified-email-addresses
+# Verify email addresses are registered in SES
+aws ses list-identities --region eu-west-2
+
+# Re-verify an email address in SES (required before it can receive notifications)
+aws ses verify-email-identity --email-address user@example.com --region eu-west-2
 ```
 
 ## Development Workflow
@@ -118,9 +121,18 @@ aws ses list-verified-email-addresses
 1. **Make changes**: Edit Terraform files (`.tf`) or Lambda code (`lambda/index.py`)
 2. **Validate**: Run `terraform validate` and test Lambda locally with pytest
 3. **Plan**: Run `terraform plan` to see infrastructure changes
-4. **Review**: Check the plan output carefully (especially SCP changes)
-5. **Deploy**: Run `terraform apply` (Terraform automatically zips and uploads Lambda code)
+4. **Review**: Check the plan output carefully (especially when `manage_scp_policy = true`)
+5. **Deploy**: Run `terraform apply` - Terraform automatically:
+   - Runs `build_lambda.sh` to create `lambda.zip`
+   - Archives the updated code
+   - Uploads to Lambda via CloudFormation
 6. **Test**: Invoke Lambda manually and check CloudWatch logs and DynamoDB
+
+**Lambda Build Process:**
+- `build_lambda.sh` is triggered automatically by Terraform when `lambda/index.py` or `lambda/requirements.txt` changes
+- Creates a zip file with proper Lambda handler structure
+- Handles dependency installation (boto3 is pre-installed in Lambda runtime)
+- Do NOT manually commit `lambda.zip` or build artifacts to git
 
 ## Important Configuration Variables
 
@@ -129,16 +141,37 @@ These must be set in `terraform.tfvars` before deployment:
 - `aws_region`: AWS region for deployment (typically `us-east-1`)
 - `schedule_expression`: EventBridge cron expression (default: `cron(0 8 * * ? *)` for daily 8 AM UTC)
 - `scp_name`: Name of existing SCP to manage (default: `blacklist`)
-- `email_recipients`: List of email addresses to notify (must be verified in SES)
-- `sender_email`: Email address sending notifications (must be verified in SES)
+- `email_recipients`: List of email addresses to notify (must be verified in SES before deployment)
+- `sender_email`: Email address sending notifications (must be verified in SES before deployment)
 - `require_approval`: Whether to require approval before SCP changes (default: `true`)
+- `manage_scp_policy`: Enable/disable automatic SCP policy management (default: `true`). Set to `false` for **notifications-only mode** (detects new services, sends emails, but does NOT modify SCP policies)
 - `baseline_snapshot_bucket`: S3 bucket for baseline snapshots (optional, for integrity checking)
+
+**Note on Notifications-Only Mode:** When `manage_scp_policy = false`:
+- Email templates automatically exclude SCP-related sections
+- No Organizations API calls are made
+- All monitoring, detection, and notification features remain active
 
 ## Sensitive Configuration
 
 - **terraform.tfvars**: Do NOT commit (listed in .gitignore). Use `terraform.tfvars.example` as template
 - **AWS Credentials**: Must be configured via AWS CLI or environment variables before terraform/Lambda deployment
 - **Email Verification**: Sender and recipient emails must be verified in SES before deployment
+
+## Infrastructure Cleanup
+
+When running `terraform destroy`, note:
+- The S3 baseline bucket has object lock with GOVERNANCE retention enabled for security
+- Terraform cannot delete S3 buckets with retained objects - manual cleanup is required:
+  ```bash
+  BUCKET="service-monitor-baseline-ACCOUNT-ID-REGION"
+  # List and delete all versions with bypass flag
+  aws s3api list-object-versions --bucket "$BUCKET" | jq '.Versions[].VersionId' | \
+    xargs -I {} aws s3api delete-object --bucket "$BUCKET" --key <key> --version-id {} \
+      --bypass-governance-retention
+  # Then retry terraform destroy
+  ```
+- Build artifacts (`lambda.zip`, `lambda_build/`) are safe to delete locally
 
 ## Testing Strategy
 
@@ -149,6 +182,18 @@ The DEVELOPMENT.md file provides detailed guidance on:
 - CloudWatch Logs Insights queries for debugging
 
 Always test in a non-production AWS account before deploying to the management account.
+
+**Manual Testing New Service Detection:**
+To test the new service detection and email notification flow:
+1. Remove a service from DynamoDB: `aws dynamodb delete-item --table-name aws-service-monitor-registry --key '{"service_name":{"S":"SERVICE_NAME"}}'`
+2. Update the baseline checksum to match the reduced service count (recalculate SHA256 of sorted service list)
+3. Invoke Lambda and verify it detects the service as "new" in the response
+4. Check CloudWatch logs for "Sent email notification" confirmation
+5. Restore the service and original baseline checksum to clean up
+
+**Email Template Behavior:**
+- When `manage_scp_policy = true`: Email includes SCP status, actions, and next steps
+- When `manage_scp_policy = false`: Email omits all SCP-related sections for clarity
 
 ## Security & Operational Notes
 
