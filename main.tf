@@ -1,3 +1,67 @@
+# S3 bucket for immutable baseline snapshots (T004 mitigation)
+resource "aws_s3_bucket" "baseline_snapshots" {
+  bucket = "service-monitor-baseline-${data.aws_caller_identity.current.account_id}-${var.aws_region}"
+
+  tags = var.tags
+}
+
+resource "aws_s3_bucket_versioning" "baseline_snapshots" {
+  bucket = aws_s3_bucket.baseline_snapshots.id
+
+  versioning_configuration {
+    status = "Enabled"
+  }
+}
+
+resource "aws_s3_bucket_object_lock_configuration" "baseline_snapshots" {
+  bucket = aws_s3_bucket.baseline_snapshots.id
+
+  rule {
+    default_retention {
+      mode = "GOVERNANCE"
+      days = 90  # 90-day retention for immutability
+    }
+  }
+}
+
+resource "aws_s3_bucket_server_side_encryption_configuration" "baseline_snapshots" {
+  bucket = aws_s3_bucket.baseline_snapshots.id
+
+  rule {
+    apply_server_side_encryption_by_default {
+      sse_algorithm = "AES256"
+    }
+  }
+}
+
+resource "aws_s3_bucket_public_access_block" "baseline_snapshots" {
+  bucket = aws_s3_bucket.baseline_snapshots.id
+
+  block_public_acls       = true
+  block_public_policy     = true
+  ignore_public_acls      = true
+  restrict_public_buckets = true
+}
+
+resource "aws_s3_bucket_lifecycle_configuration" "baseline_snapshots" {
+  bucket = aws_s3_bucket.baseline_snapshots.id
+
+  rule {
+    id     = "delete_old_snapshots"
+    status = "Enabled"
+
+    # Delete snapshots older than 1 year
+    expiration {
+      days = 365
+    }
+
+    # Delete old versions after 90 days
+    noncurrent_version_expiration {
+      noncurrent_days = 90
+    }
+  }
+}
+
 # DynamoDB table for tracking monitored services
 resource "aws_dynamodb_table" "service_registry" {
   name           = "aws-service-monitor-registry"
@@ -85,6 +149,33 @@ resource "aws_iam_role_policy" "lambda_scp_policy" {
   })
 }
 
+# IAM policy for Lambda to write baseline snapshots to S3 (T004 mitigation)
+resource "aws_iam_role_policy" "lambda_s3_policy" {
+  name = "lambda-s3-baseline-policy"
+  role = aws_iam_role.lambda_role.id
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Effect = "Allow"
+        Action = [
+          "s3:PutObject",
+          "s3:PutObjectVersionTagging"
+        ]
+        Resource = "${aws_s3_bucket.baseline_snapshots.arn}/*"
+      },
+      {
+        Effect = "Allow"
+        Action = [
+          "s3:ListBucket"
+        ]
+        Resource = aws_s3_bucket.baseline_snapshots.arn
+      }
+    ]
+  })
+}
+
 # IAM policy for Lambda to send emails via SES
 resource "aws_iam_role_policy" "lambda_ses_policy" {
   name = "lambda-ses-policy"
@@ -145,12 +236,13 @@ resource "aws_lambda_function" "service_monitor" {
 
   environment {
     variables = {
-      DYNAMODB_TABLE        = aws_dynamodb_table.service_registry.name
-      SCP_NAME              = var.scp_name
-      EMAIL_RECIPIENTS      = jsonencode(var.email_recipients)
-      SENDER_EMAIL          = var.sender_email
-      AWS_REGION            = var.aws_region
-      REQUIRE_APPROVAL      = var.require_scp_approval ? "true" : "false"
+      DYNAMODB_TABLE            = aws_dynamodb_table.service_registry.name
+      SCP_NAME                  = var.scp_name
+      EMAIL_RECIPIENTS          = jsonencode(var.email_recipients)
+      SENDER_EMAIL              = var.sender_email
+      AWS_REGION                = var.aws_region
+      REQUIRE_APPROVAL          = var.require_scp_approval ? "true" : "false"
+      BASELINE_SNAPSHOT_BUCKET  = aws_s3_bucket.baseline_snapshots.id
     }
   }
 
