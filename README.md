@@ -1,14 +1,19 @@
-# AWS New Services Monitor with SCP Management
+# AWS New Services Monitor
 
-A Terraform/OpenTofu project that automatically monitors AWS for new services and manages a Service Control Policy (SCP) blacklist in your AWS Organization's management account.
+A Terraform/OpenTofu project that automatically monitors AWS for new services and optionally manages a Service Control Policy (SCP) blacklist in your AWS Organization's management account.
+
+**Two Operational Modes**:
+- 🔒 **SCP Management Mode** (default): Automatically detects new services and updates your SCP policy
+- 📢 **Notifications-Only Mode** (optional): Detects new services and sends alerts without modifying policies
 
 ## Features
 
 - **Automated Monitoring**: Fetches the AWS service reference daily
 - **New Service Detection**: Identifies only new services (ignores API changes)
 - **State Tracking**: Maintains a registry of known services in DynamoDB
-- **SCP Management**: Automatically updates the blacklist SCP with new services
 - **Email Notifications**: Sends human-readable emails when new services are detected
+- **Optional SCP Management**: Automatically updates your blacklist SCP policy (configurable)
+- **Flexible Deployment**: Choose between SCP management or notifications-only mode
 - **Fully Infrastructure-as-Code**: Terraform/OpenTofu based deployment
 
 ## Architecture
@@ -55,7 +60,7 @@ For detailed architecture documentation, see [ARCHITECTURE.md](./ARCHITECTURE.md
 - AWS credentials configured for the management account
 - Terraform or OpenTofu installed (v1.0+)
 - Email addresses verified in AWS SES (Simple Email Service) for your region
-- An existing Service Control Policy named "blacklist" (or customize via `scp_name` variable)
+- **(Optional) SCP Management Mode Only**: An existing Service Control Policy named "blacklist" (or customize via `scp_name` variable)
 
 ### Email Setup in SES
 
@@ -87,7 +92,24 @@ schedule_expression = "cron(0 8 * * ? *)"  # 8 AM UTC daily
 scp_name = "blacklist"
 email_recipients = ["ops-team@example.com"]
 sender_email = "aws-monitor@example.com"
+
+# Choose your mode:
+# Option 1: SCP Management Mode (automatic policy updates)
+manage_scp_policy = true
+require_scp_approval = false  # true for approval-based, false for automatic
+
+# Option 2: Notifications-Only Mode (no policy changes, just alerts)
+manage_scp_policy = false
 ```
+
+#### Operational Modes Explained
+
+| Mode | Setting | Behavior | Use Case |
+|------|---------|----------|----------|
+| **SCP Management** | `manage_scp_policy = true` | Automatically detects new services and updates your SCP | Production environments with established policies |
+| **Notifications-Only** | `manage_scp_policy = false` | Detects new services and sends alerts, but never modifies policies | Testing, audit, or manual SCP management |
+| **Approval-Based** | `require_scp_approval = true` | Stores SCP changes for manual review before applying | Conservative environments requiring change control |
+| **Automatic** | `require_scp_approval = false` | Applies SCP changes immediately | Fast-moving environments that trust the baseline |
 
 ### 2. Initialize and Plan
 
@@ -149,28 +171,113 @@ When new services are detected, you'll receive formatted emails with:
 - **Body** (HTML): Nicely formatted with:
   - List of new services detected
   - Timestamp of the scan
-  - Actions taken (SCP update, registry update)
+  - Actions taken (depends on mode - see below)
   - Next steps for review
 - **Body** (Plain Text): Alternative text version for email clients that don't support HTML
 
-Example services in email:
+### Email Content Based on Mode
+
+**SCP Management Mode** (`manage_scp_policy = true`):
 ```
+✅ SUCCESS: Service Control Policy Updated
+
+New Services Detected: 3
 - apigateway
 - autoscaling
 - dynamodb
-- lambda
-- s3
+
+Service Control Policy Status: Successfully Updated
+- Policy Name: blacklist
+- Action: Added new service actions to Deny statement
+- Services in Policy: 450 total actions
 ```
 
-## SCP Integration
+**Notifications-Only Mode** (`manage_scp_policy = false`):
+```
+📢 NEW SERVICES DETECTED (Notifications-Only Mode)
 
-The Lambda function will update your "blacklist" SCP by:
+New Services Detected: 3
+- apigateway
+- autoscaling
+- dynamodb
 
-1. Fetching the current policy from Organizations
-2. Adding new services to the deny list
-3. Updating the policy with the new service restrictions
+Service Control Policy: Not Updated
+- Mode: Notifications-only (SCP management disabled)
+- Action: No policy changes made
+- Next Steps: Manually add services to your SCP if desired
+```
 
-**Note**: The SCP must exist before deployment. Create it if needed:
+## Operational Modes
+
+### Mode 1: SCP Management (Default)
+
+**Configuration**:
+```hcl
+manage_scp_policy = true
+```
+
+**What Happens**:
+- ✅ New services are detected
+- ✅ DynamoDB registry is updated
+- ✅ SCP policy is automatically updated with new service restrictions
+- ✅ Email is sent confirming the SCP update
+
+**Best For**:
+- Production environments with established SCP policies
+- Teams that want fully automated compliance enforcement
+- Environments where new service restrictions should take effect immediately
+
+**Requirements**:
+- An existing SCP policy named "blacklist" (or custom name)
+- Adequate IAM permissions for Organizations API
+
+---
+
+### Mode 2: Notifications-Only
+
+**Configuration**:
+```hcl
+manage_scp_policy = false
+```
+
+**What Happens**:
+- ✅ New services are detected
+- ✅ DynamoDB registry is updated
+- ✅ SCP policy is NOT modified
+- ✅ Email is sent indicating "notifications-only" mode
+- ℹ️ Manual action required to update SCP
+
+**Best For**:
+- Testing and validation before enabling SCP management
+- Audit and compliance monitoring
+- Teams that prefer manual SCP management
+- Sandboxes where automatic policy changes are not desired
+
+**Requirements**:
+- No additional prerequisites
+- No SCP policy required
+- Can be deployed to any AWS account (not just management account)
+
+---
+
+## SCP Integration (Optional)
+
+The Lambda function can optionally update your "blacklist" SCP policy when new services are detected.
+
+### Enabling SCP Management
+
+Set `manage_scp_policy = true` in `terraform.tfvars` to enable this feature.
+
+### How It Works (When Enabled)
+
+1. Fetches the current policy from AWS Organizations
+2. Adds new services to the deny list
+3. Updates the policy with the new service restrictions
+4. Sends email confirmation of the SCP update
+
+### Creating the SCP (Optional)
+
+**Note**: The SCP must exist before deployment if you plan to use SCP management. Create it if needed:
 
 ```bash
 aws organizations create-policy \
