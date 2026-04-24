@@ -24,6 +24,7 @@ REQUIRE_APPROVAL = os.environ.get('REQUIRE_APPROVAL', 'true').lower() == 'true'
 SERVICE_REFERENCE_URL = "https://servicereference.us-east-1.amazonaws.com/"
 SERVICE_NAME_PATTERN = re.compile(r'^[a-z0-9\-]+$')
 MAX_SERVICE_NAME_LENGTH = 30
+BASELINE_MARKER = "__baseline_initialized__"
 
 
 def fetch_aws_services() -> Set[str]:
@@ -58,6 +59,50 @@ def fetch_aws_services() -> Set[str]:
         return set()
 
 
+def is_baseline_initialized() -> bool:
+    """Check if baseline has been initialized."""
+    try:
+        table = dynamodb.Table(DYNAMODB_TABLE)
+        response = table.get_item(Key={'service_name': BASELINE_MARKER})
+        return 'Item' in response
+    except Exception as e:
+        logger.error(f"Error checking baseline status: {str(e)}")
+        return False
+
+
+def initialize_baseline(services: Set[str]) -> bool:
+    """Initialize baseline with current services (first run only)."""
+    try:
+        table = dynamodb.Table(DYNAMODB_TABLE)
+        timestamp = datetime.utcnow().isoformat()
+
+        # Mark baseline as initialized
+        table.put_item(Item={
+            'service_name': BASELINE_MARKER,
+            'first_seen': timestamp,
+            'last_updated': timestamp,
+            'status': 'initialized',
+            'service_count': len(services)
+        })
+
+        # Store all current services as baseline
+        with table.batch_writer(batch_size=25) as batch:
+            for service in services:
+                batch.put_item(Item={
+                    'service_name': service,
+                    'first_seen': timestamp,
+                    'last_updated': timestamp,
+                    'is_baseline': True
+                })
+
+        logger.info(f"Baseline initialized with {len(services)} services")
+        return True
+
+    except Exception as e:
+        logger.error(f"Error initializing baseline: {str(e)}")
+        return False
+
+
 def get_tracked_services() -> Set[str]:
     """Get the set of previously tracked services from DynamoDB."""
     try:
@@ -66,12 +111,16 @@ def get_tracked_services() -> Set[str]:
 
         tracked = set()
         for item in response.get('Items', []):
-            tracked.add(item['service_name'])
+            # Skip baseline marker and metadata items
+            if not item['service_name'].startswith('__'):
+                tracked.add(item['service_name'])
 
         while 'LastEvaluatedKey' in response:
             response = table.scan(ExclusiveStartKey=response['LastEvaluatedKey'])
             for item in response.get('Items', []):
-                tracked.add(item['service_name'])
+                # Skip baseline marker and metadata items
+                if not item['service_name'].startswith('__'):
+                    tracked.add(item['service_name'])
 
         logger.info(f"Retrieved {len(tracked)} tracked services from DynamoDB")
         return tracked
@@ -486,13 +535,44 @@ def lambda_handler(event, context):
                 'body': json.dumps({'error': 'Failed to fetch AWS services'})
             }
 
-        # Get previously tracked services
+        logger.info(f"Total services: {len(current_services)}")
+
+        # CHECK: Is this the first run?
+        if not is_baseline_initialized():
+            logger.info("=== BASELINE INITIALIZATION ===")
+            logger.info("First run detected - initializing baseline")
+
+            # Initialize baseline with all current services
+            success = initialize_baseline(current_services)
+
+            if success:
+                logger.info(f"Baseline initialized with {len(current_services)} services")
+                return {
+                    'statusCode': 200,
+                    'body': json.dumps({
+                        'message': 'Baseline established',
+                        'baseline_services': len(current_services),
+                        'status': 'baseline_initialized',
+                        'note': 'No actions taken on first run. Monitoring will begin on next execution.',
+                        'scan_time': start_time
+                    })
+                }
+            else:
+                logger.error("Failed to initialize baseline")
+                return {
+                    'statusCode': 500,
+                    'body': json.dumps({
+                        'error': 'Failed to initialize baseline',
+                        'scan_time': start_time
+                    })
+                }
+
+        # Get previously tracked services (baseline is initialized)
         tracked_services = get_tracked_services()
 
         # Identify new services
         new_services = current_services - tracked_services
 
-        logger.info(f"Total services: {len(current_services)}")
         logger.info(f"Tracked services: {len(tracked_services)}")
         logger.info(f"New services: {len(new_services)}")
 

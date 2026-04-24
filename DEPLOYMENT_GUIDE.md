@@ -186,7 +186,9 @@ aws events describe-rule \
 
 ## Step 8: Test the Deployment
 
-### Manual Lambda Invocation
+### Manual Lambda Invocation (First Run - Baseline Initialization)
+
+On the first run, the Lambda function will initialize a baseline with all current services:
 
 ```bash
 aws lambda invoke \
@@ -197,9 +199,62 @@ aws lambda invoke \
 cat response.json
 ```
 
-Expected output (if no new services):
+Expected output (first run):
 ```json
-{"statusCode": 200, "body": "\"No new services detected\""}
+{
+  "statusCode": 200,
+  "body": "{
+    \"message\": \"Baseline established\",
+    \"baseline_services\": 234,
+    \"status\": \"baseline_initialized\",
+    \"note\": \"No actions taken on first run. Monitoring will begin on next execution.\",
+    \"scan_time\": \"2026-04-24T12:00:00.000000\"
+  }"
+}
+```
+
+**Key Points:**
+- ✅ Baseline is stored in DynamoDB
+- ✅ No emails sent
+- ✅ No SCP changes made
+- ✅ Ready for production use
+
+### Wait for Second Run (or Trigger Manually)
+
+On the next execution (after 24 hours or manual trigger):
+
+```bash
+# Manual trigger for testing
+aws lambda invoke \
+  --function-name aws-service-monitor \
+  --region us-east-1 \
+  response.json
+
+cat response.json
+```
+
+Expected output (subsequent runs):
+```json
+{
+  "statusCode": 200,
+  "body": "{
+    \"message\": \"No new services detected\",
+    \"scan_time\": \"2026-04-24T13:00:00.000000\"
+  }"
+}
+```
+
+Or if new services exist:
+```json
+{
+  "statusCode": 200,
+  "body": "{
+    \"message\": \"Processed 5 new services\",
+    \"new_services\": [\"service1\", \"service2\", ...],
+    \"scp_status\": \"pending_approval\",
+    \"scan_time\": \"2026-04-24T13:00:00.000000\"
+  }"
+}
 ```
 
 ### Check CloudWatch Logs
