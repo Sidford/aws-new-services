@@ -9,6 +9,10 @@ resource "aws_dynamodb_table" "service_registry" {
     type = "S"
   }
 
+  point_in_time_recovery_specification {
+    enabled = true
+  }
+
   ttl {
     attribute_name = "expiration_time"
     enabled        = false
@@ -101,7 +105,7 @@ resource "aws_iam_role_policy" "lambda_ses_policy" {
   })
 }
 
-# IAM policy for Lambda to write logs
+# IAM policy for Lambda to write logs (restricted to specific log group)
 resource "aws_iam_role_policy" "lambda_logs_policy" {
   name = "lambda-logs-policy"
   role = aws_iam_role.lambda_role.id
@@ -116,7 +120,7 @@ resource "aws_iam_role_policy" "lambda_logs_policy" {
           "logs:CreateLogStream",
           "logs:PutLogEvents"
         ]
-        Resource = "arn:aws:logs:*:*:*"
+        Resource = "${aws_cloudwatch_log_group.lambda_logs.arn}:*"
       }
     ]
   })
@@ -146,6 +150,7 @@ resource "aws_lambda_function" "service_monitor" {
       EMAIL_RECIPIENTS      = jsonencode(var.email_recipients)
       SENDER_EMAIL          = var.sender_email
       AWS_REGION            = var.aws_region
+      REQUIRE_APPROVAL      = var.require_scp_approval ? "true" : "false"
     }
   }
 

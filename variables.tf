@@ -26,6 +26,12 @@ variable "sender_email" {
   type        = string
 }
 
+variable "require_scp_approval" {
+  description = "Require manual approval before updating SCP (dry-run mode)"
+  type        = bool
+  default     = true
+}
+
 variable "tags" {
   description = "Common tags for all resources"
   type        = map(string)

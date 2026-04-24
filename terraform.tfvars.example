@@ -21,6 +21,11 @@ email_recipients = [
 # Email address to send from (must be verified in AWS SES)
 sender_email = "aws-monitor@example.com"
 
+# Security: Require manual approval before updating SCP
+# When true: Lambda generates SCP preview and waits for approval
+# When false: Lambda automatically updates SCP (not recommended for production)
+require_scp_approval = true
+
 # Optional: Add custom tags
 tags = {
   Project     = "AWS-Service-Monitor"
