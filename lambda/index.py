@@ -5,6 +5,7 @@ import requests
 import logging
 import re
 import copy
+import hashlib
 from datetime import datetime
 from typing import List, Dict, Set, Tuple
 
@@ -14,12 +15,14 @@ logger.setLevel(logging.INFO)
 dynamodb = boto3.resource('dynamodb')
 organizations = boto3.client('organizations')
 ses = boto3.client('ses')
+s3 = boto3.client('s3')
 
 DYNAMODB_TABLE = os.environ['DYNAMODB_TABLE']
 SCP_NAME = os.environ['SCP_NAME']
 EMAIL_RECIPIENTS = json.loads(os.environ['EMAIL_RECIPIENTS'])
 SENDER_EMAIL = os.environ['SENDER_EMAIL']
 REQUIRE_APPROVAL = os.environ.get('REQUIRE_APPROVAL', 'true').lower() == 'true'
+BASELINE_SNAPSHOT_BUCKET = os.environ.get('BASELINE_SNAPSHOT_BUCKET', '')
 
 SERVICE_REFERENCE_URL = "https://servicereference.us-east-1.amazonaws.com/"
 SERVICE_NAME_PATTERN = re.compile(r'^[a-z0-9\-]+$')
@@ -59,6 +62,109 @@ def fetch_aws_services() -> Set[str]:
         return set()
 
 
+def calculate_baseline_checksum(services: Set[str]) -> str:
+    """Calculate SHA256 checksum of baseline services for integrity verification."""
+    # Create deterministic string representation (sorted)
+    service_string = json.dumps(sorted(list(services)), separators=(',', ':'))
+    checksum = hashlib.sha256(service_string.encode()).hexdigest()
+    logger.debug(f"Calculated baseline checksum: {checksum}")
+    return checksum
+
+
+def store_baseline_snapshot(services: Set[str], checksum: str, timestamp: str) -> bool:
+    """Store immutable baseline snapshot in S3 for tamper detection."""
+    if not BASELINE_SNAPSHOT_BUCKET:
+        logger.warning("BASELINE_SNAPSHOT_BUCKET not configured, skipping S3 snapshot")
+        return True
+
+    try:
+        snapshot = {
+            'timestamp': timestamp,
+            'service_count': len(services),
+            'services': sorted(list(services)),
+            'checksum': checksum,
+            'version': '1.0'
+        }
+
+        key = f'baseline-snapshots/{timestamp}.json'
+
+        s3.put_object(
+            Bucket=BASELINE_SNAPSHOT_BUCKET,
+            Key=key,
+            Body=json.dumps(snapshot, indent=2),
+            ServerSideEncryption='AES256',
+            ContentType='application/json',
+            Metadata={
+                'checksum': checksum,
+                'service-count': str(len(services))
+            }
+        )
+
+        logger.info(f"Stored immutable baseline snapshot: s3://{BASELINE_SNAPSHOT_BUCKET}/{key}")
+        return True
+
+    except Exception as e:
+        logger.error(f"Error storing baseline snapshot: {str(e)}")
+        return False
+
+
+def verify_baseline_integrity() -> Tuple[bool, str]:
+    """Verify baseline integrity by checking checksum."""
+    try:
+        table = dynamodb.Table(DYNAMODB_TABLE)
+
+        # Get baseline marker
+        response = table.get_item(Key={'service_name': BASELINE_MARKER})
+
+        if 'Item' not in response:
+            logger.info("Baseline not initialized yet")
+            return True, "Baseline not initialized"
+
+        baseline_item = response['Item']
+        stored_checksum = baseline_item.get('checksum', '')
+
+        if not stored_checksum:
+            logger.warning("Baseline has no checksum, cannot verify integrity")
+            return True, "No checksum available"
+
+        # Get all tracked services (excluding metadata)
+        scan_response = table.scan(
+            FilterExpression='attribute_not_exists(service_name) OR NOT begins_with(service_name, :prefix)',
+            ExpressionAttributeValues={':prefix': '__'},
+            ProjectionExpression='service_name'
+        )
+
+        services = set(item['service_name'] for item in scan_response.get('Items', []))
+
+        # Handle pagination
+        while 'LastEvaluatedKey' in scan_response:
+            scan_response = table.scan(
+                FilterExpression='attribute_not_exists(service_name) OR NOT begins_with(service_name, :prefix)',
+                ExpressionAttributeValues={':prefix': '__'},
+                ProjectionExpression='service_name',
+                ExclusiveStartKey=scan_response['LastEvaluatedKey']
+            )
+            services.update(item['service_name'] for item in scan_response.get('Items', []))
+
+        # Calculate checksum of current services
+        calculated_checksum = calculate_baseline_checksum(services)
+
+        # Compare checksums
+        if stored_checksum == calculated_checksum:
+            logger.info(f"Baseline integrity verified ✓ (checksum: {calculated_checksum[:8]}...)")
+            return True, "Baseline integrity verified"
+        else:
+            logger.error(f"BASELINE INTEGRITY VIOLATION DETECTED")
+            logger.error(f"  Expected: {stored_checksum}")
+            logger.error(f"  Actual:   {calculated_checksum}")
+            logger.error(f"  Services: {len(services)}")
+            return False, f"Checksum mismatch: expected {stored_checksum[:8]}, got {calculated_checksum[:8]}"
+
+    except Exception as e:
+        logger.error(f"Error verifying baseline integrity: {str(e)}")
+        return False, f"Integrity check failed: {str(e)}"
+
+
 def is_baseline_initialized() -> bool:
     """Check if baseline has been initialized."""
     try:
@@ -71,10 +177,13 @@ def is_baseline_initialized() -> bool:
 
 
 def initialize_baseline(services: Set[str]) -> bool:
-    """Initialize baseline with current services (first run only)."""
+    """Initialize baseline with current services and integrity checksum."""
     try:
         table = dynamodb.Table(DYNAMODB_TABLE)
         timestamp = datetime.utcnow().isoformat()
+
+        # Calculate checksum for integrity verification
+        checksum = calculate_baseline_checksum(services)
 
         # Use conditional write to prevent race condition
         # This ensures only the first initialization succeeds
@@ -84,7 +193,8 @@ def initialize_baseline(services: Set[str]) -> bool:
                 'first_seen': timestamp,
                 'last_updated': timestamp,
                 'status': 'initialized',
-                'service_count': len(services)
+                'service_count': len(services),
+                'checksum': checksum  # Store checksum for integrity verification
             },
             ConditionExpression='attribute_not_exists(service_name)'
         )
@@ -99,7 +209,15 @@ def initialize_baseline(services: Set[str]) -> bool:
                     'is_baseline': True
                 })
 
+        # Store immutable snapshot in S3 for tamper detection
+        snapshot_stored = store_baseline_snapshot(services, checksum, timestamp)
+
         logger.info(f"Baseline initialized with {len(services)} services")
+        logger.info(f"Baseline checksum: {checksum[:16]}... (stored for integrity verification)")
+
+        if snapshot_stored and BASELINE_SNAPSHOT_BUCKET:
+            logger.info(f"Immutable baseline snapshot stored in S3")
+
         return True
 
     except Exception as e:
@@ -362,6 +480,148 @@ def update_scp_with_services(scp_policy: Dict, new_services: List[str]) -> Tuple
         return False, f"Error updating SCP: {str(e)}"
 
 
+def send_tamper_alert_email(integrity_msg: str) -> bool:
+    """Send security alert email for baseline tampering detection."""
+    try:
+        timestamp = datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S UTC')
+
+        html_body = f"""
+        <html>
+        <head>
+            <style>
+                body {{ font-family: Arial, sans-serif; color: #333; }}
+                .container {{ max-width: 600px; margin: 0 auto; padding: 20px; }}
+                .alert {{ background-color: #f8d7da; border: 2px solid #f5c6cb; border-radius: 5px; padding: 20px; margin-bottom: 20px; }}
+                .alert-title {{ color: #721c24; font-size: 20px; font-weight: bold; }}
+                .alert-message {{ color: #721c24; font-size: 16px; margin-top: 10px; }}
+                .details {{ background-color: #f5f5f5; padding: 15px; margin: 15px 0; border-left: 4px solid #dc3545; font-family: monospace; }}
+                .action {{ background-color: #fff3cd; padding: 15px; margin: 15px 0; border-left: 4px solid #ffc107; }}
+                .footer {{ color: #666; font-size: 12px; margin-top: 20px; }}
+            </style>
+        </head>
+        <body>
+            <div class="container">
+                <div class="alert">
+                    <div class="alert-title">🚨 SECURITY ALERT: Baseline Integrity Violation</div>
+                </div>
+
+                <h2>Baseline Tampering Detected</h2>
+                <p>The AWS Service Monitor has detected a potential tampering attempt on the service baseline.</p>
+
+                <div class="details">
+                    <strong>Integrity Check Failed:</strong><br/>
+                    {integrity_msg}
+                </div>
+
+                <div class="action">
+                    <strong>⚠️ IMMEDIATE ACTION REQUIRED:</strong>
+                    <ul>
+                        <li>Review CloudTrail logs for recent DynamoDB modifications</li>
+                        <li>Verify baseline data integrity in AWS console</li>
+                        <li>Check S3 immutable backup: baseline-snapshots/</li>
+                        <li>Initiate incident response procedure</li>
+                        <li>Restore from S3 snapshot if tampering confirmed</li>
+                    </ul>
+                </div>
+
+                <h3>What This Means</h3>
+                <p>The baseline data or checksum appears to have been modified. This could indicate:</p>
+                <ul>
+                    <li>Unauthorized DynamoDB table modifications</li>
+                    <li>Attempted security bypass</li>
+                    <li>Service registry corruption</li>
+                </ul>
+
+                <h3>Next Steps</h3>
+                <ol>
+                    <li>Contact your security team immediately</li>
+                    <li>Do NOT delete CloudWatch logs or CloudTrail data</li>
+                    <li>Do NOT make manual changes to DynamoDB</li>
+                    <li>Preserve S3 baseline snapshot for forensics</li>
+                    <li>Review all organization SCPs for unauthorized changes</li>
+                </ol>
+
+                <div class="footer">
+                    <p><strong>Alert Time:</strong> {timestamp}</p>
+                    <p><strong>Service:</strong> AWS Service Monitor</p>
+                    <p><strong>Severity:</strong> CRITICAL</p>
+                    <p>This is an automated security alert. Do not reply to this email.</p>
+                </div>
+            </div>
+        </body>
+        </html>
+        """
+
+        text_body = f"""
+SECURITY ALERT: Baseline Integrity Violation
+{'='*60}
+
+BASELINE TAMPERING DETECTED
+
+The AWS Service Monitor has detected a potential tampering attempt
+on the service baseline.
+
+INTEGRITY CHECK FAILED:
+{integrity_msg}
+
+IMMEDIATE ACTION REQUIRED:
+  1. Review CloudTrail logs for recent DynamoDB modifications
+  2. Verify baseline data integrity in AWS console
+  3. Check S3 immutable backup: baseline-snapshots/
+  4. Initiate incident response procedure
+  5. Restore from S3 snapshot if tampering confirmed
+
+WHAT THIS MEANS:
+The baseline data or checksum has been modified. This could indicate:
+  - Unauthorized DynamoDB table modifications
+  - Attempted security bypass
+  - Service registry corruption
+
+NEXT STEPS:
+  1. Contact your security team immediately
+  2. Do NOT delete CloudWatch logs or CloudTrail data
+  3. Do NOT make manual changes to DynamoDB
+  4. Preserve S3 baseline snapshot for forensics
+  5. Review all organization SCPs for unauthorized changes
+
+{'='*60}
+Alert Time: {timestamp}
+Service: AWS Service Monitor
+Severity: CRITICAL
+
+This is an automated security alert. Do not reply to this email.
+"""
+
+        for recipient in EMAIL_RECIPIENTS:
+            ses.send_email(
+                Source=SENDER_EMAIL,
+                Destination={'ToAddresses': [recipient]},
+                Message={
+                    'Subject': {
+                        'Data': '🚨 SECURITY ALERT: Baseline Integrity Violation Detected',
+                        'Charset': 'UTF-8'
+                    },
+                    'Body': {
+                        'Text': {
+                            'Data': text_body,
+                            'Charset': 'UTF-8'
+                        },
+                        'Html': {
+                            'Data': html_body,
+                            'Charset': 'UTF-8'
+                        }
+                    }
+                }
+            )
+
+        logger.info(f"Security alert email sent to {len(EMAIL_RECIPIENTS)} recipient(s)")
+        return True
+
+    except Exception as e:
+        logger.error(f"Error sending tamper alert email: {str(e)}")
+        return False
+
+
 def send_notification_email(new_services: List[str], scp_status: str = 'unknown') -> bool:
     """Send formatted email notification about new services."""
     try:
@@ -576,7 +836,23 @@ def lambda_handler(event, context):
                     })
                 }
 
-        # Get previously tracked services (baseline is initialized)
+        # Verify baseline integrity (detect tampering)
+        is_valid, integrity_msg = verify_baseline_integrity()
+
+        if not is_valid:
+            logger.critical(f"SECURITY ALERT: {integrity_msg}")
+            # Send alert email about tampering
+            send_tamper_alert_email(integrity_msg)
+            return {
+                'statusCode': 500,
+                'body': json.dumps({
+                    'error': 'Baseline integrity check failed',
+                    'details': integrity_msg,
+                    'action': 'Security alert sent'
+                })
+            }
+
+        # Get previously tracked services (baseline is initialized and verified)
         tracked_services = get_tracked_services()
 
         # Identify new services
