@@ -569,9 +569,9 @@ Post-Deployment:
 ## Related Documentation
 
 - [THREAT_MODEL.md](./THREAT_MODEL.md) - T004 threat details
-- [SECURITY.md](./SECURITY.md) - Overall security controls
-- [WELL_ARCHITECTED_REVIEW.md](./WELL_ARCHITECTED_REVIEW.md) - Data protection pillar
-- [DEVELOPMENT.md](./DEVELOPMENT.md) - Lambda customization
+- [SECURITY.md](../SECURITY.md) - Overall security controls
+- [WELL_ARCHITECTED_REVIEW.md](../WELL_ARCHITECTED_REVIEW.md) - Data protection pillar
+- [DEVELOPMENT.md](../DEVELOPMENT.md) - Lambda customization
 
 ---
 
