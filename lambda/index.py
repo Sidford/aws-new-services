@@ -1,9 +1,15 @@
 import json
 import os
 import boto3
-import urllib3
+import requests
+import logging
+import re
+import copy
 from datetime import datetime
-from typing import List, Dict, Set
+from typing import List, Dict, Set, Tuple
+
+logger = logging.getLogger()
+logger.setLevel(logging.INFO)
 
 dynamodb = boto3.resource('dynamodb')
 organizations = boto3.client('organizations')
@@ -13,37 +19,42 @@ DYNAMODB_TABLE = os.environ['DYNAMODB_TABLE']
 SCP_NAME = os.environ['SCP_NAME']
 EMAIL_RECIPIENTS = json.loads(os.environ['EMAIL_RECIPIENTS'])
 SENDER_EMAIL = os.environ['SENDER_EMAIL']
+REQUIRE_APPROVAL = os.environ.get('REQUIRE_APPROVAL', 'true').lower() == 'true'
 
 SERVICE_REFERENCE_URL = "https://servicereference.us-east-1.amazonaws.com/"
-
-http = urllib3.PoolManager()
+SERVICE_NAME_PATTERN = re.compile(r'^[a-z0-9\-]+$')
+MAX_SERVICE_NAME_LENGTH = 30
 
 
 def fetch_aws_services() -> Set[str]:
-    """Fetch the list of AWS services from the service reference."""
+    """Fetch AWS services with HTTPS certificate validation."""
     try:
-        response = http.request('GET', SERVICE_REFERENCE_URL, timeout=30)
-        if response.status != 200:
-            print(f"Failed to fetch services: HTTP {response.status}")
-            return set()
+        response = requests.get(
+            SERVICE_REFERENCE_URL,
+            timeout=30,
+            verify=True  # Enforce HTTPS certificate validation
+        )
+        response.raise_for_status()
+        data = response.json()
 
-        data = json.loads(response.data.decode('utf-8'))
-
-        # Extract service names from the reference
-        # The structure typically contains services as keys
         services = set()
         if isinstance(data, dict):
             if 'services' in data:
                 services = set(data['services'].keys())
             else:
-                # If services are at the top level
                 services = set(data.keys())
 
-        print(f"Fetched {len(services)} services from AWS reference")
+        logger.info(f"Fetched {len(services)} services from AWS reference")
         return services
 
-    except Exception as e:
-        print(f"Error fetching AWS services: {str(e)}")
+    except requests.exceptions.SSLError as e:
+        logger.error(f"SSL certificate validation failed: {str(e)}")
+        return set()
+    except requests.exceptions.RequestException as e:
+        logger.error(f"Failed to fetch AWS services: {str(e)}")
+        return set()
+    except (json.JSONDecodeError, KeyError) as e:
+        logger.error(f"Failed to parse service reference response: {str(e)}")
         return set()
 
 
@@ -57,18 +68,87 @@ def get_tracked_services() -> Set[str]:
         for item in response.get('Items', []):
             tracked.add(item['service_name'])
 
-        # Handle pagination
         while 'LastEvaluatedKey' in response:
             response = table.scan(ExclusiveStartKey=response['LastEvaluatedKey'])
             for item in response.get('Items', []):
                 tracked.add(item['service_name'])
 
-        print(f"Retrieved {len(tracked)} tracked services from DynamoDB")
+        logger.info(f"Retrieved {len(tracked)} tracked services from DynamoDB")
         return tracked
 
     except Exception as e:
-        print(f"Error getting tracked services: {str(e)}")
+        logger.error(f"Error getting tracked services: {str(e)}")
         return set()
+
+
+def validate_service_names(services: Set[str]) -> Tuple[Set[str], List[str]]:
+    """Validate service names against AWS naming conventions."""
+    valid_services = set()
+    invalid_services = []
+
+    for service in services:
+        # Check format: lowercase alphanumeric + hyphens
+        if not SERVICE_NAME_PATTERN.match(service):
+            invalid_services.append(f"{service} (invalid format)")
+            continue
+
+        # Check length
+        if len(service) > MAX_SERVICE_NAME_LENGTH:
+            invalid_services.append(f"{service} (exceeds max length {MAX_SERVICE_NAME_LENGTH})")
+            continue
+
+        # Check minimum length (avoid very short names)
+        if len(service) < 2:
+            invalid_services.append(f"{service} (too short)")
+            continue
+
+        valid_services.add(service)
+
+    if invalid_services:
+        logger.warning(f"Found {len(invalid_services)} invalid services: {invalid_services}")
+
+    return valid_services, invalid_services
+
+
+def validate_policy_document(policy_document: Dict) -> Tuple[bool, str]:
+    """Validate IAM policy document syntax and structure."""
+    try:
+        # Check required fields
+        if 'Statement' not in policy_document:
+            return False, "Missing 'Statement' field"
+
+        if not isinstance(policy_document['Statement'], list):
+            return False, "'Statement' must be a list"
+
+        if len(policy_document['Statement']) == 0:
+            return False, "'Statement' cannot be empty"
+
+        # Validate each statement
+        for idx, statement in enumerate(policy_document['Statement']):
+            if not isinstance(statement, dict):
+                return False, f"Statement {idx} is not a dictionary"
+
+            if 'Effect' not in statement:
+                return False, f"Statement {idx} missing 'Effect'"
+
+            if statement['Effect'] not in ['Allow', 'Deny']:
+                return False, f"Statement {idx} invalid Effect: {statement['Effect']}"
+
+            if 'Action' not in statement:
+                return False, f"Statement {idx} missing 'Action'"
+
+            if 'Resource' not in statement:
+                return False, f"Statement {idx} missing 'Resource'"
+
+        # Validate JSON serializability
+        json.dumps(policy_document)
+
+        return True, "Valid"
+
+    except json.JSONDecodeError as e:
+        return False, f"Policy not JSON serializable: {str(e)}"
+    except Exception as e:
+        return False, f"Validation error: {str(e)}"
 
 
 def store_new_services(services: List[str]) -> None:
@@ -116,19 +196,67 @@ def get_scp_policy() -> Dict:
         return None
 
 
-def update_scp_with_services(scp_policy: Dict, new_services: List[str]) -> bool:
-    """Update the SCP to deny new services."""
-    try:
-        policy_content = scp_policy['content']
+def generate_scp_preview(scp_policy: Dict, new_services: List[str]) -> Dict:
+    """Generate a preview of SCP changes without updating."""
+    policy_content = copy.deepcopy(scp_policy['content'])
 
-        # Ensure the policy has a Statement
+    if 'Statement' not in policy_content:
+        policy_content['Statement'] = []
+
+    deny_statement = None
+    for statement in policy_content['Statement']:
+        if statement.get('Effect') == 'Deny':
+            deny_statement = statement
+            break
+
+    if not deny_statement:
+        deny_statement = {
+            'Sid': 'DenyNewServices',
+            'Effect': 'Deny',
+            'Action': '*',
+            'Resource': '*'
+        }
+        policy_content['Statement'].append(deny_statement)
+
+    actions_before = len(deny_statement.get('Action', [])
+                         if isinstance(deny_statement.get('Action'), list)
+                         else [deny_statement.get('Action')])
+
+    for service in new_services:
+        service_action = f"{service.lower()}:*"
+        if 'Action' not in deny_statement:
+            deny_statement['Action'] = [service_action]
+        elif service_action not in deny_statement['Action']:
+            if isinstance(deny_statement['Action'], str):
+                deny_statement['Action'] = [deny_statement['Action']]
+            if service_action not in deny_statement['Action']:
+                deny_statement['Action'].append(service_action)
+
+    actions_after = len(deny_statement.get('Action', [])
+                        if isinstance(deny_statement.get('Action'), list)
+                        else [deny_statement.get('Action')])
+
+    return {
+        'policy_id': scp_policy['id'],
+        'policy_name': SCP_NAME,
+        'services_to_add': new_services,
+        'actions_before': actions_before,
+        'actions_after': actions_after,
+        'preview_content': policy_content
+    }
+
+
+def update_scp_with_services(scp_policy: Dict, new_services: List[str]) -> Tuple[bool, str]:
+    """Update SCP with validation and error handling."""
+    try:
+        policy_content = copy.deepcopy(scp_policy['content'])
+
         if 'Statement' not in policy_content:
             policy_content['Statement'] = []
 
-        # Find or create the deny statement for services
         deny_statement = None
         for statement in policy_content['Statement']:
-            if statement.get('Effect') == 'Deny' and 'Service' in statement.get('Action', []):
+            if statement.get('Effect') == 'Deny':
                 deny_statement = statement
                 break
 
@@ -137,16 +265,10 @@ def update_scp_with_services(scp_policy: Dict, new_services: List[str]) -> bool:
                 'Sid': 'DenyNewServices',
                 'Effect': 'Deny',
                 'Action': '*',
-                'Resource': '*',
-                'Condition': {
-                    'StringEquals': {
-                        'aws:PrincipalOrgID': '*'
-                    }
-                }
+                'Resource': '*'
             }
             policy_content['Statement'].append(deny_statement)
 
-        # Add new services to the deny list
         updated = False
         for service in new_services:
             service_action = f"{service.lower()}:*"
@@ -156,31 +278,41 @@ def update_scp_with_services(scp_policy: Dict, new_services: List[str]) -> bool:
             elif service_action not in deny_statement['Action']:
                 if isinstance(deny_statement['Action'], str):
                     deny_statement['Action'] = [deny_statement['Action']]
-                deny_statement['Action'].append(service_action)
-                updated = True
+                if service_action not in deny_statement['Action']:
+                    deny_statement['Action'].append(service_action)
+                    updated = True
 
-        if updated:
-            organizations.update_policy(
-                PolicyId=scp_policy['id'],
-                Content=json.dumps(policy_content)
-            )
-            print(f"Updated SCP with {len(new_services)} new services")
-            return True
+        if not updated:
+            return False, "No changes needed"
 
-        return False
+        # Validate policy before updating
+        is_valid, error = validate_policy_document(policy_content)
+        if not is_valid:
+            logger.error(f"Policy validation failed: {error}")
+            return False, f"Policy validation failed: {error}"
+
+        # Update policy
+        organizations.update_policy(
+            PolicyId=scp_policy['id'],
+            Content=json.dumps(policy_content)
+        )
+        logger.info(f"Successfully updated SCP with {len(new_services)} new services")
+        return True, "SCP updated successfully"
 
     except Exception as e:
-        print(f"Error updating SCP: {str(e)}")
-        return False
+        logger.error(f"Error updating SCP: {str(e)}")
+        return False, f"Error updating SCP: {str(e)}"
 
 
-def send_notification_email(new_services: List[str]) -> bool:
-    """Send a formatted email notification about new services."""
+def send_notification_email(new_services: List[str], scp_status: str = 'unknown') -> bool:
+    """Send formatted email notification about new services."""
     try:
         timestamp = datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S UTC')
 
-        html_body = generate_html_email(new_services, timestamp)
-        text_body = generate_text_email(new_services, timestamp)
+        html_body = generate_html_email(new_services, timestamp, scp_status)
+        text_body = generate_text_email(new_services, timestamp, scp_status)
+
+        subject = f'AWS Service Monitor: {len(new_services)} New Service(s) Detected'
 
         for recipient in EMAIL_RECIPIENTS:
             ses.send_email(
@@ -188,7 +320,7 @@ def send_notification_email(new_services: List[str]) -> bool:
                 Destination={'ToAddresses': [recipient]},
                 Message={
                     'Subject': {
-                        'Data': f'AWS Service Monitor: {len(new_services)} New Service(s) Detected',
+                        'Data': subject,
                         'Charset': 'UTF-8'
                     },
                     'Body': {
@@ -204,17 +336,32 @@ def send_notification_email(new_services: List[str]) -> bool:
                 }
             )
 
-        print(f"Sent email notification to {len(EMAIL_RECIPIENTS)} recipient(s)")
+        logger.info(f"Sent email notification to {len(EMAIL_RECIPIENTS)} recipient(s)")
         return True
 
     except Exception as e:
-        print(f"Error sending email: {str(e)}")
+        logger.error(f"Error sending email: {str(e)}")
         return False
 
 
-def generate_html_email(services: List[str], timestamp: str) -> str:
-    """Generate a formatted HTML email."""
-    services_html = '\n'.join([f'                <li>{service}</li>' for service in sorted(services)])
+def get_scp_status_message(status: str) -> Tuple[str, str]:
+    """Get status message and color for email."""
+    status_messages = {
+        'success': ('✅ SCP Updated', 'Services have been added to the SCP policy'),
+        'pending_approval': ('⏳ Pending Approval', 'Changes are pending manual approval'),
+        'failed': ('❌ SCP Update Failed', 'SCP update encountered an error'),
+        'not_found': ('⚠️ SCP Not Found', 'Service Control Policy not found'),
+        'not_attempted': ('ℹ️ Not Attempted', 'SCP update was not attempted'),
+        'unknown': ('ℹ️ Unknown', 'SCP status unknown')
+    }
+    return status_messages.get(status, status_messages['unknown'])
+
+
+def generate_html_email(services: List[str], timestamp: str, scp_status: str = 'unknown') -> str:
+    """Generate formatted HTML email with proper escaping."""
+    from html import escape
+    services_html = '\n'.join([f'                <li>{escape(service)}</li>' for service in sorted(services)])
+    status_title, status_message = get_scp_status_message(scp_status)
 
     html = f"""
     <html>
@@ -225,6 +372,8 @@ def generate_html_email(services: List[str], timestamp: str) -> str:
             .header {{ background-color: #FF9900; color: white; padding: 20px; border-radius: 5px; margin-bottom: 20px; }}
             .content {{ background-color: #f5f5f5; padding: 20px; border-radius: 5px; }}
             .service-list {{ background-color: white; padding: 15px; border-left: 4px solid #FF9900; margin: 15px 0; }}
+            .status-box {{ background-color: white; padding: 15px; border-left: 4px solid #007bff; margin: 15px 0; }}
+            .status-title {{ font-weight: bold; font-size: 16px; }}
             .footer {{ color: #666; font-size: 12px; margin-top: 20px; }}
             h2 {{ color: #FF9900; margin-top: 0; }}
             ul {{ list-style-type: none; padding-left: 0; }}
@@ -243,7 +392,10 @@ def generate_html_email(services: List[str], timestamp: str) -> str:
 
                 <p>The AWS service monitoring job has identified <strong>{len(services)} new service(s)</strong> as of {timestamp}.</p>
 
-                <p>These services have been added to the <strong>'{SCP_NAME}'</strong> Service Control Policy.</p>
+                <div class="status-box">
+                    <div class="status-title">{status_title}</div>
+                    <p>{status_message}</p>
+                </div>
 
                 <div class="service-list">
                     <h3>New Services:</h3>
@@ -254,9 +406,10 @@ def generate_html_email(services: List[str], timestamp: str) -> str:
 
                 <p><strong>Actions Taken:</strong></p>
                 <ul>
-                    <li>Services added to SCP '{SCP_NAME}'</li>
-                    <li>Service registry updated in DynamoDB</li>
-                    <li>Notification email sent</li>
+                    <li>✓ Service names validated</li>
+                    <li>✓ Service registry updated in DynamoDB</li>
+                    <li>✓ SCP change preview generated</li>
+                    <li>✓ Notification email sent</li>
                 </ul>
 
                 <p><strong>Next Steps:</strong></p>
@@ -264,6 +417,7 @@ def generate_html_email(services: List[str], timestamp: str) -> str:
                     <li>Review the new services in the SCP</li>
                     <li>Verify organization policies are applied correctly</li>
                     <li>Monitor CloudWatch logs for any policy enforcement issues</li>
+                    <li>Check AWS CloudTrail for policy modification events</li>
                 </ul>
             </div>
 
@@ -279,9 +433,10 @@ def generate_html_email(services: List[str], timestamp: str) -> str:
     return html
 
 
-def generate_text_email(services: List[str], timestamp: str) -> str:
-    """Generate a plain text email."""
+def generate_text_email(services: List[str], timestamp: str, scp_status: str = 'unknown') -> str:
+    """Generate plain text email with proper escaping."""
     services_text = '\n'.join([f'  - {service}' for service in sorted(services)])
+    status_title, status_message = get_scp_status_message(scp_status)
 
     text = f"""AWS SERVICE MONITOR ALERT
 {"="*50}
@@ -290,20 +445,23 @@ New AWS Services Detected
 
 The AWS service monitoring job has identified {len(services)} new service(s) as of {timestamp}.
 
-These services have been added to the '{SCP_NAME}' Service Control Policy.
+STATUS: {status_title}
+{status_message}
 
 NEW SERVICES:
 {services_text}
 
 ACTIONS TAKEN:
-  - Services added to SCP '{SCP_NAME}'
-  - Service registry updated in DynamoDB
-  - Notification email sent
+  ✓ Service names validated
+  ✓ Service registry updated in DynamoDB
+  ✓ SCP change preview generated
+  ✓ Notification email sent
 
 NEXT STEPS:
   - Review the new services in the SCP
   - Verify organization policies are applied correctly
   - Monitor CloudWatch logs for any policy enforcement issues
+  - Check AWS CloudTrail for policy modification events
 
 {"="*50}
 This is an automated notification from AWS Service Monitor.
@@ -314,17 +472,18 @@ Scan Time: {timestamp}
 
 
 def lambda_handler(event, context):
-    """Main Lambda handler function."""
-    print(f"Starting AWS service monitor at {datetime.utcnow().isoformat()}")
+    """Main Lambda handler with security validation and approval workflows."""
+    start_time = datetime.utcnow().isoformat()
+    logger.info(f"Starting AWS service monitor at {start_time}")
 
     try:
         # Fetch current services from AWS reference
         current_services = fetch_aws_services()
         if not current_services:
-            print("Warning: No services fetched from AWS reference")
+            logger.error("No services fetched from AWS reference")
             return {
                 'statusCode': 500,
-                'body': json.dumps('Failed to fetch AWS services')
+                'body': json.dumps({'error': 'Failed to fetch AWS services'})
             }
 
         # Get previously tracked services
@@ -333,43 +492,110 @@ def lambda_handler(event, context):
         # Identify new services
         new_services = current_services - tracked_services
 
-        print(f"Total services: {len(current_services)}")
-        print(f"Tracked services: {len(tracked_services)}")
-        print(f"New services: {len(new_services)}")
+        logger.info(f"Total services: {len(current_services)}")
+        logger.info(f"Tracked services: {len(tracked_services)}")
+        logger.info(f"New services: {len(new_services)}")
 
         if new_services:
-            new_services_list = sorted(list(new_services))
+            # Validate service names
+            valid_services, invalid_services = validate_service_names(new_services)
+
+            if not valid_services:
+                logger.error(f"All services failed validation: {invalid_services}")
+                return {
+                    'statusCode': 400,
+                    'body': json.dumps({
+                        'error': 'All services failed validation',
+                        'invalid_services': invalid_services
+                    })
+                }
+
+            new_services_list = sorted(list(valid_services))
 
             # Store new services in DynamoDB
             store_new_services(new_services_list)
 
-            # Get and update SCP
+            # Get SCP policy
             scp_policy = get_scp_policy()
+            scp_update_status = 'not_attempted'
+            scp_error = None
+
             if scp_policy:
-                update_scp_with_services(scp_policy, new_services_list)
+                # Generate preview first
+                preview = generate_scp_preview(scp_policy, new_services_list)
+
+                if REQUIRE_APPROVAL:
+                    logger.info("Approval required - storing preview for manual review")
+                    scp_update_status = 'pending_approval'
+                    # Store preview in DynamoDB for approval workflow
+                    store_pending_scp_update(preview)
+                else:
+                    # Update SCP with validation
+                    success, message = update_scp_with_services(scp_policy, new_services_list)
+                    scp_update_status = 'success' if success else 'failed'
+                    scp_error = message if not success else None
+                    logger.info(f"SCP update result: {message}")
             else:
-                print(f"Warning: SCP '{SCP_NAME}' not found. Services will be tracked but not added to SCP.")
+                logger.warning(f"SCP '{SCP_NAME}' not found")
+                scp_update_status = 'not_found'
 
             # Send notification email
-            send_notification_email(new_services_list)
+            send_notification_email(new_services_list, scp_update_status)
 
+            response = {
+                'statusCode': 200,
+                'body': {
+                    'message': f'Processed {len(new_services_list)} new services',
+                    'new_services': new_services_list,
+                    'scp_status': scp_update_status,
+                    'invalid_services': invalid_services if invalid_services else None,
+                    'scan_time': start_time
+                }
+            }
+
+            if scp_error:
+                response['body']['scp_error'] = scp_error
+
+            return {
+                'statusCode': response['statusCode'],
+                'body': json.dumps(response['body'])
+            }
+        else:
+            logger.info("No new services detected")
             return {
                 'statusCode': 200,
                 'body': json.dumps({
-                    'message': f'Successfully processed {len(new_services)} new services',
-                    'new_services': new_services_list
+                    'message': 'No new services detected',
+                    'scan_time': start_time
                 })
-            }
-        else:
-            print("No new services detected")
-            return {
-                'statusCode': 200,
-                'body': json.dumps('No new services detected')
             }
 
     except Exception as e:
-        print(f"Error in lambda_handler: {str(e)}")
+        logger.exception(f"Unexpected error in lambda_handler: {str(e)}")
         return {
             'statusCode': 500,
-            'body': json.dumps(f'Error: {str(e)}')
+            'body': json.dumps({
+                'error': 'Internal server error',
+                'details': str(e)
+            })
         }
+
+
+def store_pending_scp_update(preview: Dict) -> None:
+    """Store pending SCP update for approval workflow."""
+    try:
+        table = dynamodb.Table(DYNAMODB_TABLE)
+        timestamp = datetime.utcnow().isoformat()
+
+        table.put_item(Item={
+            'service_name': f"__pending_scp_update__{timestamp}",
+            'first_seen': timestamp,
+            'last_updated': timestamp,
+            'preview': preview,
+            'status': 'pending_approval'
+        })
+
+        logger.info(f"Stored pending SCP update for approval")
+
+    except Exception as e:
+        logger.error(f"Error storing pending SCP update: {str(e)}")
