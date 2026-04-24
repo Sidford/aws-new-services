@@ -13,21 +13,41 @@ A Terraform/OpenTofu project that automatically monitors AWS for new services an
 
 ## Architecture
 
+```mermaid
+graph TB
+    subgraph "External"
+        AWS["AWS Service Reference<br/>(servicereference.us-east-1.amazonaws.com)"]
+    end
+    
+    subgraph "AWS Management Account"
+        EB["EventBridge<br/>(Daily Schedule)<br/>cron(0 8 * * ? *)"]
+        Lambda["Lambda Function<br/>(aws-service-monitor)"]
+        CW["CloudWatch Logs<br/>(/aws/lambda/...)"]
+        
+        subgraph "Data"
+            DB["DynamoDB<br/>(service-registry)<br/>State Tracking"]
+        end
+        
+        subgraph "Integration"
+            ORG["AWS Organizations<br/>(Service Control<br/>Policy Management)"]
+            SES["Amazon SES<br/>(Email Notifications)"]
+        end
+    end
+    
+    subgraph "External Notification"
+        EMAIL["Email Recipients"]
+    end
+    
+    AWS -->|"Fetch services<br/>daily"| Lambda
+    EB -->|"Trigger"| Lambda
+    Lambda -->|"Read/Write<br/>tracked services"| DB
+    Lambda -->|"Query & Update<br/>SCP Policy"| ORG
+    Lambda -->|"Send formatted<br/>HTML+Text emails"| SES
+    Lambda -->|"Write execution<br/>logs"| CW
+    SES -->|"Email notification"| EMAIL
 ```
-AWS Service Reference
-        ↓
-    EventBridge (Daily Schedule)
-        ↓
-    Lambda Function
-        ├→ Fetch services from reference
-        ├→ Compare with DynamoDB registry
-        ├→ Update SCP if new services found
-        └→ Send email notification
-        ↓
-    DynamoDB (Service Registry)
-    SES (Email notifications)
-    Organizations (SCP updates)
-```
+
+For detailed architecture documentation, see [ARCHITECTURE.md](./ARCHITECTURE.md)
 
 ## Prerequisites
 
