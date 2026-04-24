@@ -777,6 +777,32 @@ def generate_html_email(services: List[str], timestamp: str, scp_status: str = '
     from html import escape
     services_html = '\n'.join([f'                <li>{escape(service)}</li>' for service in sorted(services)])
     status_title, status_message = get_scp_status_message(scp_status)
+    is_scp_managed = scp_status != 'disabled'
+
+    actions = """                    <li>✓ Service names validated</li>
+                    <li>✓ Service registry updated in DynamoDB</li>"""
+    if is_scp_managed:
+        actions += """
+                    <li>✓ SCP change preview generated</li>"""
+    actions += """
+                    <li>✓ Notification email sent</li>"""
+
+    next_steps = ""
+    if is_scp_managed:
+        next_steps = """
+                <p><strong>Next Steps:</strong></p>
+                <ul>
+                    <li>Review the new services in the SCP</li>
+                    <li>Verify organization policies are applied correctly</li>
+                    <li>Monitor CloudWatch logs for any policy enforcement issues</li>
+                    <li>Check AWS CloudTrail for policy modification events</li>
+                </ul>"""
+
+    status_section = f"""
+                <div class="status-box">
+                    <div class="status-title">{status_title}</div>
+                    <p>{status_message}</p>
+                </div>""" if is_scp_managed else ""
 
     html = f"""
     <html>
@@ -806,11 +832,7 @@ def generate_html_email(services: List[str], timestamp: str, scp_status: str = '
                 <h2>New AWS Services Detected</h2>
 
                 <p>The AWS service monitoring job has identified <strong>{len(services)} new service(s)</strong> as of {timestamp}.</p>
-
-                <div class="status-box">
-                    <div class="status-title">{status_title}</div>
-                    <p>{status_message}</p>
-                </div>
+{status_section}
 
                 <div class="service-list">
                     <h3>New Services:</h3>
@@ -821,19 +843,9 @@ def generate_html_email(services: List[str], timestamp: str, scp_status: str = '
 
                 <p><strong>Actions Taken:</strong></p>
                 <ul>
-                    <li>✓ Service names validated</li>
-                    <li>✓ Service registry updated in DynamoDB</li>
-                    <li>✓ SCP change preview generated</li>
-                    <li>✓ Notification email sent</li>
+{actions}
                 </ul>
-
-                <p><strong>Next Steps:</strong></p>
-                <ul>
-                    <li>Review the new services in the SCP</li>
-                    <li>Verify organization policies are applied correctly</li>
-                    <li>Monitor CloudWatch logs for any policy enforcement issues</li>
-                    <li>Check AWS CloudTrail for policy modification events</li>
-                </ul>
+{next_steps}
             </div>
 
             <div class="footer">
@@ -852,6 +864,24 @@ def generate_text_email(services: List[str], timestamp: str, scp_status: str = '
     """Generate plain text email with proper escaping."""
     services_text = '\n'.join([f'  - {service}' for service in sorted(services)])
     status_title, status_message = get_scp_status_message(scp_status)
+    is_scp_managed = scp_status != 'disabled'
+
+    status_section = f"STATUS: {status_title}\n{status_message}\n\n" if is_scp_managed else ""
+
+    actions = "ACTIONS TAKEN:\n  ✓ Service names validated\n  ✓ Service registry updated in DynamoDB"
+    if is_scp_managed:
+        actions += "\n  ✓ SCP change preview generated"
+    actions += "\n  ✓ Notification email sent\n"
+
+    next_steps = ""
+    if is_scp_managed:
+        next_steps = """
+NEXT STEPS:
+  - Review the new services in the SCP
+  - Verify organization policies are applied correctly
+  - Monitor CloudWatch logs for any policy enforcement issues
+  - Check AWS CloudTrail for policy modification events
+"""
 
     text = f"""AWS SERVICE MONITOR ALERT
 {"="*50}
@@ -860,25 +890,10 @@ New AWS Services Detected
 
 The AWS service monitoring job has identified {len(services)} new service(s) as of {timestamp}.
 
-STATUS: {status_title}
-{status_message}
-
-NEW SERVICES:
+{status_section}NEW SERVICES:
 {services_text}
 
-ACTIONS TAKEN:
-  ✓ Service names validated
-  ✓ Service registry updated in DynamoDB
-  ✓ SCP change preview generated
-  ✓ Notification email sent
-
-NEXT STEPS:
-  - Review the new services in the SCP
-  - Verify organization policies are applied correctly
-  - Monitor CloudWatch logs for any policy enforcement issues
-  - Check AWS CloudTrail for policy modification events
-
-{"="*50}
+{actions}{next_steps}{"="*50}
 This is an automated notification from AWS Service Monitor.
 Scan Time: {timestamp}
 """
