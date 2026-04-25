@@ -89,8 +89,6 @@ Edit `terraform.tfvars` with your specific values:
 ```hcl
 aws_region = "us-east-1"
 schedule_expression = "cron(0 8 * * ? *)"  # 8 AM UTC daily
-scp_name = "blacklist"
-scp_sid = "BlockNewServices"  # Statement ID to update in the SCP
 email_recipients = ["ops-team@example.com"]
 sender_email = "aws-monitor@example.com"
 
@@ -98,6 +96,8 @@ sender_email = "aws-monitor@example.com"
 # Option 1: SCP Management Mode (automatic policy updates)
 manage_scp_policy = true
 require_scp_approval = false  # true for approval-based, false for automatic
+scp_name = "blacklist"
+scp_sid = "BlockNewServices"  # Statement ID to update in the SCP
 
 # Option 2: Notifications-Only Mode (no policy changes, just alerts)
 manage_scp_policy = false
