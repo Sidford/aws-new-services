@@ -373,10 +373,10 @@ def store_new_services(services: List[str]) -> None:
                     'last_updated': timestamp
                 })
 
-        print(f"Stored {len(services)} new services in DynamoDB")
+        logger.info(f"Stored {len(services)} new services in DynamoDB")
 
     except Exception as e:
-        print(f"Error storing services: {str(e)}")
+        logger.error(f"Error storing services: {str(e)}")
 
 
 def get_scp_policy() -> Dict:
@@ -391,7 +391,7 @@ def get_scp_policy() -> Dict:
                 break
 
         if not scp_id:
-            print(f"SCP '{SCP_NAME}' not found")
+            logger.warning(f"SCP '{SCP_NAME}' not found")
             return None
 
         policy_details = organizations.describe_policy(PolicyId=scp_id)
@@ -400,7 +400,7 @@ def get_scp_policy() -> Dict:
         return {'id': scp_id, 'content': policy_content}
 
     except Exception as e:
-        print(f"Error getting SCP policy: {str(e)}")
+        logger.error(f"Error getting SCP policy: {str(e)}")
         return None
 
 
