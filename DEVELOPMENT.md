@@ -70,13 +70,68 @@ def lambda_handler(event, context):
 
 ### 4. Custom SCP Update Logic
 
-Modify `update_scp_with_services()` to implement different SCP strategies:
+The Lambda targets a specific statement by its Sid for safe policy updates. By default, it looks for the statement with `Sid="BlockNewServices"`, but you can customize this.
+
+**Configure the Statement ID**:
+
+In `terraform.tfvars`:
+```hcl
+scp_sid = "BlockNewServices"  # Change to match your SCP statement ID
+```
+
+**How it works**:
+- Lambda reads the `SCP_SID` environment variable
+- Scans the SCP policy's statements
+- Finds the statement with matching Sid
+- Updates only that statement's Action list with new services
+- Leaves other statements untouched
+
+**Example SCP with multiple statements**:
+```json
+{
+  "Statement": [
+    {
+      "Sid": "AllowRootDeny",
+      "Effect": "Allow",
+      "Principal": "*",
+      "Action": "*",
+      "Resource": "*"
+    },
+    {
+      "Sid": "BlockNewServices",
+      "Effect": "Deny",
+      "Principal": "*",
+      "Action": ["ec2:*", "s3:*"],
+      "Resource": "*"
+    }
+  ]
+}
+```
+
+Only the "BlockNewServices" statement will be updated with new services.
+
+**To customize further**, modify `update_scp_with_services()`:
 
 ```python
-def update_scp_with_services(scp_policy: Dict, new_services: List[str]) -> bool:
+def update_scp_with_services(scp_policy: Dict, new_services: List[str]) -> Tuple[bool, str]:
     """Custom SCP update strategy."""
-    # Your logic here
-    pass
+    policy_content = copy.deepcopy(scp_policy['content'])
+    
+    # Find statement by Sid
+    deny_statement = None
+    for statement in policy_content['Statement']:
+        if statement.get('Sid') == SCP_SID:
+            deny_statement = statement
+            break
+    
+    if not deny_statement:
+        # Handle missing statement
+        return False, "Statement not found"
+    
+    # Your custom logic here
+    # For example: apply different formatting, skip certain services, etc.
+    
+    return True, "Updated successfully"
 ```
 
 ## Local Testing

@@ -10,6 +10,7 @@ import boto3
 # Set up environment variables before importing the handler
 os.environ['DYNAMODB_TABLE'] = 'test-registry'
 os.environ['SCP_NAME'] = 'blacklist'
+os.environ['SCP_SID'] = 'BlockNewServices'
 os.environ['EMAIL_RECIPIENTS'] = '["ops@example.com"]'
 os.environ['SENDER_EMAIL'] = 'monitor@example.com'
 os.environ['REQUIRE_APPROVAL'] = 'false'
@@ -346,6 +347,75 @@ class TestNewServiceDetectionWithSCP:
         # Email should still be sent indicating SCP not found
         mock_send_email.assert_called_once()
         assert mock_send_email.call_args[0][1] == 'not_found'
+
+    @patch('index.MANAGE_SCP_POLICY', True)
+    @patch('index.REQUIRE_APPROVAL', False)
+    @patch('index.fetch_aws_services')
+    @patch('index.get_scp_policy')
+    @patch('index.update_scp_with_services')
+    @patch('index.send_notification_email')
+    @patch('index.publish_metrics')
+    def test_scp_update_respects_sid(
+        self,
+        mock_publish_metrics,
+        mock_send_email,
+        mock_update_scp,
+        mock_get_scp,
+        mock_fetch_services,
+        dynamodb_table
+    ):
+        """Test that SCP update only modifies the statement with matching SID."""
+        # Setup
+        initial_services = ['ec2', 's3', 'lambda']
+        create_baseline_with_services(dynamodb_table, initial_services)
+
+        # Mock AWS service fetch
+        current_services = initial_services + ['sagemaker']
+        mock_fetch_services.return_value = set(current_services)
+
+        # Mock SCP with multiple statements - only BlockNewServices should be updated
+        mock_get_scp.return_value = {
+            'id': 'p-test123',
+            'name': 'blacklist',
+            'content': {
+                'Version': '2012-10-17',
+                'Statement': [
+                    {
+                        'Sid': 'PreventRootDeny',
+                        'Effect': 'Deny',
+                        'Action': '*',
+                        'Resource': '*',
+                        'Condition': {'StringNotLike': {'aws:PrincipalArn': 'arn:aws:iam::*:root'}}
+                    },
+                    {
+                        'Sid': 'BlockNewServices',
+                        'Effect': 'Deny',
+                        'Action': ['ec2:*', 's3:*', 'lambda:*'],
+                        'Resource': '*'
+                    }
+                ]
+            }
+        }
+        mock_update_scp.return_value = (True, 'SCP updated successfully')
+        mock_send_email.return_value = True
+
+        # Invoke
+        with patch('index.dynamodb') as mock_ddb:
+            mock_ddb.Table.return_value = dynamodb_table
+            with patch('index.organizations'):
+                with patch('index.ses'):
+                    with patch('index.cloudwatch'):
+                        with patch('index.sns'):
+                            response = lambda_handler({}, {})
+
+        # Verify
+        assert response['statusCode'] == 200
+        body = json.loads(response['body'])
+        assert body['scp_status'] == 'success'
+        assert 'sagemaker' in body['new_services']
+
+        # Verify SCP update was called
+        assert mock_update_scp.called
 
 
 class TestEmailNotifications:

@@ -2,17 +2,13 @@
   "Version": "2012-10-17",
   "Statement": [
     {
-      "Sid": "DenyBlocklistedServices",
+      "Sid": "BlockNewServices",
       "Effect": "Deny",
-      "Action": [
-        "*"
-      ],
-      "Resource": "*",
-      "Condition": {
-        "StringEquals": {
-          "aws:PrincipalOrgID": "*"
-        }
-      }
+      "Principal": "*",
+      "Action": [],
+      "Resource": "*"
     }
   ]
 }
+
+

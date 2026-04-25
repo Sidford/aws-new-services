@@ -23,6 +23,7 @@ sns = boto3.client('sns')
 
 DYNAMODB_TABLE = os.environ['DYNAMODB_TABLE']
 SCP_NAME = os.environ['SCP_NAME']
+SCP_SID = os.environ.get('SCP_SID', 'BlockNewServices')
 EMAIL_RECIPIENTS = json.loads(os.environ['EMAIL_RECIPIENTS'])
 SENDER_EMAIL = os.environ['SENDER_EMAIL']
 REQUIRE_APPROVAL = os.environ.get('REQUIRE_APPROVAL', 'true').lower() == 'true'
@@ -412,13 +413,13 @@ def generate_scp_preview(scp_policy: Dict, new_services: List[str]) -> Dict:
 
     deny_statement = None
     for statement in policy_content['Statement']:
-        if statement.get('Effect') == 'Deny':
+        if statement.get('Sid') == SCP_SID:
             deny_statement = statement
             break
 
     if not deny_statement:
         deny_statement = {
-            'Sid': 'DenyNewServices',
+            'Sid': SCP_SID,
             'Effect': 'Deny',
             'Action': '*',
             'Resource': '*'
@@ -463,13 +464,13 @@ def update_scp_with_services(scp_policy: Dict, new_services: List[str]) -> Tuple
 
         deny_statement = None
         for statement in policy_content['Statement']:
-            if statement.get('Effect') == 'Deny':
+            if statement.get('Sid') == SCP_SID:
                 deny_statement = statement
                 break
 
         if not deny_statement:
             deny_statement = {
-                'Sid': 'DenyNewServices',
+                'Sid': SCP_SID,
                 'Effect': 'Deny',
                 'Action': '*',
                 'Resource': '*'

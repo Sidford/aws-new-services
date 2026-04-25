@@ -34,6 +34,12 @@ manage_scp_policy = true
 # Leave as default "blacklist" or customize for your SCP name
 scp_name = "blacklist"
 
+# Statement ID (Sid) in the SCP to update
+# Only used when manage_scp_policy = true
+# The Lambda will only update the statement with this Sid
+# Leave as default "BlockNewServices" or customize to match your SCP statement ID
+scp_sid = "BlockNewServices"
+
 # Security: Require manual approval before updating SCP
 # Only used when manage_scp_policy = true
 # - true: Lambda generates SCP preview and waits for manual approval (recommended)

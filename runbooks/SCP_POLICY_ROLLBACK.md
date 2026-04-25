@@ -13,6 +13,8 @@
 - SCP update caused service outages
 - Need to reverse recent SCP changes
 
+**Note**: The Lambda function now targets a specific statement by ID (Sid), so only the configured statement is modified. Other statements in the SCP remain untouched, reducing the blast radius of changes.
+
 ---
 
 ## Immediate Action (< 5 min)

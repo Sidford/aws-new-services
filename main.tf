@@ -311,6 +311,7 @@ resource "aws_lambda_function" "service_monitor" {
     variables = {
       DYNAMODB_TABLE            = aws_dynamodb_table.service_registry.name
       SCP_NAME                  = var.scp_name
+      SCP_SID                   = var.scp_sid
       EMAIL_RECIPIENTS          = jsonencode(var.email_recipients)
       SENDER_EMAIL              = var.sender_email
       REQUIRE_APPROVAL          = var.require_scp_approval ? "true" : "false"

@@ -46,7 +46,7 @@ aws ses list-verified-email-addresses --region us-east-1
 
 All addresses should appear in the list.
 
-## Step 2: Verify Blacklist SCP Exists
+## Step 2: Verify Blacklist SCP Exists and Has Matching Statement ID
 
 Check if your "blacklist" SCP exists:
 
@@ -55,6 +55,18 @@ aws organizations list-policies --filter SERVICE_CONTROL_POLICY --region us-east
 ```
 
 Look for a policy named "blacklist" in the results.
+
+### Important: Statement ID (Sid) Must Match
+
+The Lambda function targets a specific statement by its Sid for safe policy updates. By default, it looks for a statement with `Sid="BlockNewServices"`. Verify that your SCP has a statement with this Sid:
+
+```bash
+aws organizations describe-policy \
+  --policy-id p-xxxxxxxx \
+  --region us-east-1
+```
+
+Look for a statement with `"Sid": "BlockNewServices"` in the policy content.
 
 ### If SCP Doesn't Exist - Create It
 
@@ -67,10 +79,23 @@ aws organizations create-policy \
   --region us-east-1
 ```
 
+The example policy includes the correct Sid ("BlockNewServices") by default.
+
 Verify creation:
 
 ```bash
 aws organizations list-policies --filter SERVICE_CONTROL_POLICY --region us-east-1
+```
+
+### If SCP Exists With Different Sid
+
+If your existing SCP uses a different Sid (e.g., "DenyBlocklistedServices"), you must either:
+
+**Option A**: Update your SCP to use "BlockNewServices" as the Sid, or
+**Option B**: Configure the Lambda to use your existing Sid via terraform.tfvars:
+
+```hcl
+scp_sid = "DenyBlocklistedServices"  # Match your existing SCP statement ID
 ```
 
 ## Step 3: Configure Terraform Variables
@@ -93,6 +118,11 @@ schedule_expression = "cron(0 8 * * ? *)"
 # Name of your blacklist SCP
 scp_name = "blacklist"
 
+# Statement ID (Sid) in the SCP to update
+# The Lambda will only update the statement with this Sid
+# This allows safe updates even if your SCP has multiple statements
+scp_sid = "BlockNewServices"
+
 # Email recipients for notifications
 email_recipients = [
   "ops-team@example.com",
@@ -101,6 +131,10 @@ email_recipients = [
 
 # Sender email (must be verified in SES)
 sender_email = "aws-monitor@example.com"
+
+# Optional: Enable/disable SCP management
+# Set to false for notifications-only mode
+manage_scp_policy = true
 
 # Optional: Custom tags
 tags = {
@@ -117,6 +151,7 @@ tags = {
 - `sender_email`: Must be SES-verified
 - `aws_region`: Should be us-east-1 (Organizations API requirement)
 - `scp_name`: Must match your existing SCP name exactly
+- `scp_sid`: Must match the Sid of a statement in your SCP (default: "BlockNewServices")
 
 ## Step 4: Initialize Terraform
 

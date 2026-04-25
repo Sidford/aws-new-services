@@ -16,6 +16,12 @@ variable "scp_name" {
   default     = "blacklist"
 }
 
+variable "scp_sid" {
+  description = "Statement ID (Sid) in the SCP to update with new services"
+  type        = string
+  default     = "BlockNewServices"
+}
+
 variable "email_recipients" {
   description = "Email addresses to receive notifications"
   type        = list(string)

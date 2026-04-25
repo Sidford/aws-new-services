@@ -37,8 +37,11 @@ The Lambda function is designed with approval gates, baseline integrity checking
   - `DEVELOPMENT.md` — Customization and testing guide
   - `DEPLOYMENT_GUIDE.md` — Step-by-step deployment
   - `SECURITY.md` — Security controls and threat model
+  - `TESTING_GUIDE.md` — Manual testing procedures and baseline management (use `scripts/test-baseline-management.sh`)
   - `WELL_ARCHITECTED_REVIEW.md` — AWS Well-Architected Framework review
   - `runbooks/` — Operational procedures for incidents and maintenance
+- **Testing Tools**:
+  - `scripts/test-baseline-management.sh` — Helper for safe baseline testing (backup, remove, restore)
 
 ## Common Commands
 
@@ -141,6 +144,7 @@ These must be set in `terraform.tfvars` before deployment:
 - `aws_region`: AWS region for deployment (typically `us-east-1`)
 - `schedule_expression`: EventBridge cron expression (default: `cron(0 8 * * ? *)` for daily 8 AM UTC)
 - `scp_name`: Name of existing SCP to manage (default: `blacklist`)
+- `scp_sid`: Statement ID (Sid) in the SCP to update with new services (default: `BlockNewServices`). The Lambda will only update the statement with this Sid, allowing multiple statements in the same policy
 - `email_recipients`: List of email addresses to notify (must be verified in SES before deployment)
 - `sender_email`: Email address sending notifications (must be verified in SES before deployment)
 - `require_approval`: Whether to require approval before SCP changes (default: `true`)
@@ -184,12 +188,31 @@ The DEVELOPMENT.md file provides detailed guidance on:
 Always test in a non-production AWS account before deploying to the management account.
 
 **Manual Testing New Service Detection:**
-To test the new service detection and email notification flow:
-1. Remove a service from DynamoDB: `aws dynamodb delete-item --table-name aws-service-monitor-registry --key '{"service_name":{"S":"SERVICE_NAME"}}'`
-2. Update the baseline checksum to match the reduced service count (recalculate SHA256 of sorted service list)
-3. Invoke Lambda and verify it detects the service as "new" in the response
-4. Check CloudWatch logs for "Sent email notification" confirmation
-5. Restore the service and original baseline checksum to clean up
+Use the helper script to safely test service detection without risking baseline integrity violations:
+
+```bash
+# 1. Backup and prepare for testing
+./scripts/test-baseline-management.sh remove sagemaker
+
+# 2. Invoke Lambda to detect the "new" service
+aws lambda invoke --function-name aws-service-monitor --region eu-west-2 response.json
+
+# 3. Check CloudWatch logs for "Sent email notification" confirmation
+aws logs tail /aws/lambda/aws-service-monitor --region eu-west-2 --since 5m
+
+# 4. Restore original baseline
+./scripts/test-baseline-management.sh restore
+
+# 5. Verify restoration
+./scripts/test-baseline-management.sh state
+```
+
+See `TESTING_GUIDE.md` for comprehensive manual testing procedures, troubleshooting, and best practices.
+The helper script (`scripts/test-baseline-management.sh`) automatically:
+- Backs up current baseline state and checksum
+- Removes services and recalculates the baseline checksum
+- Restores original baseline and all services after testing
+- Prevents false tampering alerts from incomplete cleanups
 
 **Email Template Behavior:**
 - When `manage_scp_policy = true`: Email includes SCP status, actions, and next steps

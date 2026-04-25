@@ -110,7 +110,7 @@ graph LR
     subgraph "Lambda Function Logic"
         FETCH["1. Fetch Services<br/>urllib3.PoolManager<br/>HTTPS GET"]
         COMPARE["2. Compare Services<br/>Set difference<br/>new = current - tracked"]
-        UPDATE_SCP["3. Update SCP<br/>Add to policy document<br/>Call Organizations API"]
+        UPDATE_SCP["3. Update SCP<br/>Find statement by Sid<br/>Add to service actions<br/>Call Organizations API"]
         STORE["4. Store Services<br/>Write to DynamoDB<br/>with timestamp"]
         EMAIL["5. Send Notification<br/>Render HTML/Text<br/>Call SES SendEmail"]
         LOG["6. Log Execution<br/>CloudWatch Logs<br/>Debug info"]
@@ -210,10 +210,11 @@ graph TD
     subgraph "Organizations API"
         REQ3["ListPolicies filter=SCP"]
         RESP3["Policy[]"]
-        FIND["Find blacklist policy"]
+        FIND["Find blacklist policy<br/>by name"]
         GET_POLICY["DescribePolicy PolicyId"]
         RESP4["Policy content JSON"]
-        UPDATE["UpdatePolicy with<br/>new statements"]
+        FIND_SID["Find statement<br/>by matching Sid"]
+        UPDATE["UpdatePolicy with<br/>updated statement"]
     end
     
     subgraph "SES Email"
@@ -234,7 +235,8 @@ graph TD
     RESP3 --> FIND
     FIND --> GET_POLICY
     GET_POLICY --> RESP4
-    RESP4 --> UPDATE
+    RESP4 --> FIND_SID
+    FIND_SID --> UPDATE
     UPDATE --> RESULT3
     
     RENDER --> SEND

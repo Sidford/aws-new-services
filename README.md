@@ -60,7 +60,7 @@ For detailed architecture documentation, see [ARCHITECTURE.md](./ARCHITECTURE.md
 - AWS credentials configured for the management account
 - Terraform or OpenTofu installed (v1.0+)
 - Email addresses verified in AWS SES (Simple Email Service) for your region
-- **(Optional) SCP Management Mode Only**: An existing Service Control Policy named "blacklist" (or customize via `scp_name` variable)
+- **(Optional) SCP Management Mode Only**: An existing Service Control Policy named "blacklist" (or customize via `scp_name` variable) with a statement ID matching `scp_sid` (default: "BlockNewServices")
 
 ### Email Setup in SES
 
@@ -90,6 +90,7 @@ Edit `terraform.tfvars` with your specific values:
 aws_region = "us-east-1"
 schedule_expression = "cron(0 8 * * ? *)"  # 8 AM UTC daily
 scp_name = "blacklist"
+scp_sid = "BlockNewServices"  # Statement ID to update in the SCP
 email_recipients = ["ops-team@example.com"]
 sender_email = "aws-monitor@example.com"
 
@@ -262,22 +263,33 @@ manage_scp_policy = false
 
 ## SCP Integration (Optional)
 
-The Lambda function can optionally update your "blacklist" SCP policy when new services are detected.
+The Lambda function can optionally update your Service Control Policy when new services are detected. It specifically targets a statement by its ID (Sid) for safe and precise policy management.
 
 ### Enabling SCP Management
 
-Set `manage_scp_policy = true` in `terraform.tfvars` to enable this feature.
+Set `manage_scp_policy = true` in `terraform.tfvars` to enable this feature. Also ensure your SCP has a statement with the Sid matching your `scp_sid` configuration (default: "BlockNewServices").
 
 ### How It Works (When Enabled)
 
 1. Fetches the current policy from AWS Organizations
-2. Adds new services to the deny list
-3. Updates the policy with the new service restrictions
-4. Sends email confirmation of the SCP update
+2. Locates the statement matching the configured `scp_sid`
+3. Adds new service actions to that statement's Deny list
+4. Updates the policy with the new service restrictions
+5. Sends email confirmation of the SCP update
+
+### Configuring the Statement ID
+
+The Lambda will only update statements with a matching Sid. This allows you to have multiple statements in your SCP without unintended modifications.
+
+**In terraform.tfvars**:
+```hcl
+scp_name = "blacklist"
+scp_sid = "BlockNewServices"  # Must match the Sid in your SCP statement
+```
 
 ### Creating the SCP (Optional)
 
-**Note**: The SCP must exist before deployment if you plan to use SCP management. Create it if needed:
+**Note**: The SCP must exist before deployment if you plan to use SCP management. Create it with the appropriate Sid:
 
 ```bash
 aws organizations create-policy \
@@ -287,25 +299,61 @@ aws organizations create-policy \
   --type SERVICE_CONTROL_POLICY
 ```
 
-Example `blacklist-policy.json`:
+Example `blacklist-policy.json` with proper Sid configuration:
 
 ```json
 {
   "Version": "2012-10-17",
   "Statement": [
     {
-      "Effect": "Deny",
+      "Sid": "AllowRootDeny",
+      "Effect": "Allow",
+      "Principal": "*",
       "Action": "*",
-      "Resource": "*",
-      "Condition": {
-        "StringEquals": {
-          "aws:PrincipalOrgID": "*"
-        }
-      }
+      "Resource": "*"
+    },
+    {
+      "Sid": "BlockNewServices",
+      "Effect": "Deny",
+      "Principal": "*",
+      "Action": [
+        "service-that-should-be-blocked:*"
+      ],
+      "Resource": "*"
     }
   ]
 }
 ```
+
+**Important**: The Sid "BlockNewServices" (or whatever you set in `scp_sid`) must exist in your SCP statement. The Lambda will only update this specific statement.
+
+### Multiple Statements
+
+Your SCP can safely have multiple statements. Only the statement with the matching Sid will be updated:
+
+```json
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Sid": "PreventRootDisable",
+      "Effect": "Deny",
+      "Principal": "*",
+      "Action": "organizations:LeaveOrganization",
+      "Resource": "*"
+    },
+    {
+      "Sid": "BlockNewServices",
+      "Effect": "Deny",
+      "Principal": "*",
+      "Action": [],
+      "Resource": "*"
+    }
+  ]
+}
+```
+
+When new services are detected, only the "BlockNewServices" statement will be modified. The "PreventRootDisable" statement remains unchanged.
 
 ## Scheduling
 
