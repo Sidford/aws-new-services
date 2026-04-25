@@ -1,15 +1,17 @@
 import json
 import os
+import re
+import copy
+import ssl
+import logging
+import hashlib
+from datetime import datetime
+from html import escape
+from typing import List, Dict, Set, Tuple
+
 import boto3
 import urllib.request
 import urllib.error
-import ssl
-import logging
-import re
-import copy
-import hashlib
-from datetime import datetime
-from typing import List, Dict, Set, Tuple
 
 logger = logging.getLogger()
 logger.setLevel(logging.INFO)
@@ -185,12 +187,11 @@ def verify_baseline_integrity() -> Tuple[bool, str]:
         if stored_checksum == calculated_checksum:
             logger.info(f"Baseline integrity verified ✓ (checksum: {calculated_checksum[:8]}...)")
             return True, "Baseline integrity verified"
-        else:
-            logger.error(f"BASELINE INTEGRITY VIOLATION DETECTED")
-            logger.error(f"  Expected: {stored_checksum}")
-            logger.error(f"  Actual:   {calculated_checksum}")
-            logger.error(f"  Services: {len(services)}")
-            return False, f"Checksum mismatch: expected {stored_checksum[:8]}, got {calculated_checksum[:8]}"
+        logger.error("BASELINE INTEGRITY VIOLATION DETECTED")
+        logger.error("  Expected: %s", stored_checksum)
+        logger.error("  Actual:   %s", calculated_checksum)
+        logger.error("  Services: %d", len(services))
+        return False, f"Checksum mismatch: expected {stored_checksum[:8]}, got {calculated_checksum[:8]}"
 
     except Exception as e:
         logger.error(f"Error verifying baseline integrity: {str(e)}")
@@ -248,18 +249,17 @@ def initialize_baseline(services: Set[str]) -> bool:
         logger.info(f"Baseline checksum: {checksum[:16]}... (stored for integrity verification)")
 
         if snapshot_stored and BASELINE_SNAPSHOT_BUCKET:
-            logger.info(f"Immutable baseline snapshot stored in S3")
+            logger.info("Immutable baseline snapshot stored in S3")
 
         return True
 
     except Exception as e:
         # Check if this is a race condition (baseline already exists)
         if 'ConditionalCheckFailedException' in str(type(e).__name__):
-            logger.warning(f"Baseline already initialized (race condition prevented)")
+            logger.warning("Baseline already initialized (race condition prevented)")
             return True  # Not an error - baseline is already set
-        else:
-            logger.error(f"Error initializing baseline: {str(e)}")
-            return False
+        logger.error("Error initializing baseline: %s", str(e))
+        return False
 
 
 def get_tracked_services() -> Set[str]:
@@ -775,7 +775,6 @@ def get_scp_status_message(status: str) -> Tuple[str, str]:
 
 def generate_html_email(services: List[str], timestamp: str, scp_status: str = 'unknown') -> str:
     """Generate formatted HTML email with proper escaping."""
-    from html import escape
     services_html = '\n'.join([f'                <li>{escape(service)}</li>' for service in sorted(services)])
     status_title, status_message = get_scp_status_message(scp_status)
     is_scp_managed = scp_status != 'disabled'
@@ -941,15 +940,14 @@ def lambda_handler(event, context):
                         'scan_time': start_time
                     })
                 }
-            else:
-                logger.error("Failed to initialize baseline")
-                return {
-                    'statusCode': 500,
-                    'body': json.dumps({
-                        'error': 'Failed to initialize baseline',
-                        'scan_time': start_time
-                    })
-                }
+            logger.error("Failed to initialize baseline")
+            return {
+                'statusCode': 500,
+                'body': json.dumps({
+                    'error': 'Failed to initialize baseline',
+                    'scan_time': start_time
+                })
+            }
 
         # Verify baseline integrity (detect tampering)
         is_valid, integrity_msg = verify_baseline_integrity()
@@ -1051,17 +1049,16 @@ def lambda_handler(event, context):
                 'statusCode': response['statusCode'],
                 'body': json.dumps(response['body'])
             }
-        else:
-            logger.info("No new services detected")
-            # Publish metrics for dashboard and alarms
-            publish_metrics(0, len(tracked_services), True)
-            return {
-                'statusCode': 200,
-                'body': json.dumps({
-                    'message': 'No new services detected',
-                    'scan_time': start_time
-                })
-            }
+        logger.info("No new services detected")
+        # Publish metrics for dashboard and alarms
+        publish_metrics(0, len(tracked_services), True)
+        return {
+            'statusCode': 200,
+            'body': json.dumps({
+                'message': 'No new services detected',
+                'scan_time': start_time
+            })
+        }
 
     except Exception as e:
         logger.exception(f"Unexpected error in lambda_handler: {str(e)}")
@@ -1088,7 +1085,7 @@ def store_pending_scp_update(preview: Dict) -> None:
             'status': 'pending_approval'
         })
 
-        logger.info(f"Stored pending SCP update for approval")
+        logger.info("Stored pending SCP update for approval")
 
     except Exception as e:
-        logger.error(f"Error storing pending SCP update: {str(e)}")
+        logger.error("Error storing pending SCP update: %s", str(e))
