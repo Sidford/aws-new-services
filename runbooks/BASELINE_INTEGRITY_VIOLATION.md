@@ -27,7 +27,7 @@ What it means?
 # Check CloudWatch Alarm
 aws cloudwatch describe-alarms \
   --alarm-names service-monitor-baseline-integrity-violation \
-  --region us-east-1
+  --region eu-west-2
 
 # Check last Lambda execution logs
 aws logs tail /aws/lambda/aws-service-monitor \
@@ -40,7 +40,7 @@ aws logs tail /aws/lambda/aws-service-monitor \
 aws logs filter-log-events \
   --log-group-name /aws/lambda/aws-service-monitor \
   --filter-pattern "BASELINE INTEGRITY" \
-  --region us-east-1 \
+  --region eu-west-2 \
   --query 'events[0]' | jq -r '.message'
 ```
 
@@ -64,7 +64,7 @@ aws logs filter-log-events \
 **Check what was modified**:
 ```bash
 # Get expected baseline services from S3 snapshot
-aws s3 cp s3://service-monitor-baseline-$(aws sts get-caller-identity --query Account --output text)-us-east-1/baseline-snapshots/ . --recursive
+aws s3 cp s3://service-monitor-baseline-$(aws sts get-caller-identity --query Account --output text)-eu-west-2/baseline-snapshots/ . --recursive
 
 # Get most recent snapshot
 SNAPSHOT=$(ls baseline-snapshots/ | sort -r | head -1)
@@ -91,7 +91,7 @@ aws dynamodb scan \
 aws cloudtrail lookup-events \
   --lookup-attributes AttributeKey=ResourceName,AttributeValue=aws-service-monitor-registry \
   --max-results 50 \
-  --region us-east-1 \
+  --region eu-west-2 \
   --output table
 
 # Focus on DeleteItem and UpdateItem operations
@@ -216,7 +216,7 @@ aws dynamodb get-item \
 aws lambda invoke \
   --function-name aws-service-monitor \
   --payload '{}' \
-  --region us-east-1 \
+  --region eu-west-2 \
   response.json
 
 # 2. Check response

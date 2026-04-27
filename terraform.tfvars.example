@@ -1,6 +1,12 @@
-# AWS Region (should be us-east-1 for Organizations management account)
-aws_region = "us-west-2"
+# ============================================================================
+# AWS REGION
+# ============================================================================
+# AWS Region for Organizations management account
+aws_region = "eu-west-2"
 
+# ============================================================================
+# SCHEDULING
+# ============================================================================
 # Schedule for daily monitoring (cron format in UTC)
 # Default: 8 AM UTC daily (cron(0 8 * * ? *))
 # Examples:
