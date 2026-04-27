@@ -1,17 +1,13 @@
 import json
 import os
+import boto3
+import requests
+import logging
 import re
 import copy
-import ssl
-import logging
 import hashlib
 from datetime import datetime
-from html import escape
 from typing import List, Dict, Set, Tuple
-
-import boto3
-import urllib.request
-import urllib.error
 
 logger = logging.getLogger()
 logger.setLevel(logging.INFO)
@@ -25,15 +21,13 @@ sns = boto3.client('sns')
 
 DYNAMODB_TABLE = os.environ['DYNAMODB_TABLE']
 SCP_NAME = os.environ['SCP_NAME']
-SCP_SID = os.environ.get('SCP_SID', 'BlockNewServices')
 EMAIL_RECIPIENTS = json.loads(os.environ['EMAIL_RECIPIENTS'])
 SENDER_EMAIL = os.environ['SENDER_EMAIL']
 REQUIRE_APPROVAL = os.environ.get('REQUIRE_APPROVAL', 'true').lower() == 'true'
 BASELINE_SNAPSHOT_BUCKET = os.environ.get('BASELINE_SNAPSHOT_BUCKET', '')
 ALERT_TOPIC_ARN = os.environ.get('ALERT_TOPIC_ARN', '')
-MANAGE_SCP_POLICY = os.environ.get('MANAGE_SCP_POLICY', 'true').lower() == 'true'
 
-SERVICE_REFERENCE_URL = "https://servicereference.us-east-1.amazonaws.com/"
+SERVICE_REFERENCE_URL = "https://servicereference.eu-west-2.amazonaws.com/"
 SERVICE_NAME_PATTERN = re.compile(r'^[a-z0-9\-]+$')
 MAX_SERVICE_NAME_LENGTH = 30
 BASELINE_MARKER = "__baseline_initialized__"
@@ -42,57 +36,32 @@ BASELINE_MARKER = "__baseline_initialized__"
 def fetch_aws_services() -> Set[str]:
     """Fetch AWS services with HTTPS certificate validation."""
     try:
-        logger.info(f"Fetching services from {SERVICE_REFERENCE_URL}")
-        context = ssl.create_default_context()
+        response = requests.get(
+            SERVICE_REFERENCE_URL,
+            timeout=30,
+            verify=True  # Enforce HTTPS certificate validation
+        )
+        response.raise_for_status()
+        data = response.json()
 
-        req = urllib.request.Request(SERVICE_REFERENCE_URL)
-        req.add_header('User-Agent', 'aws-service-monitor/1.0')
+        services = set()
+        if isinstance(data, dict):
+            if 'services' in data:
+                services = set(data['services'].keys())
+            else:
+                services = set(data.keys())
 
-        with urllib.request.urlopen(req, timeout=30, context=context) as response:
-            content = response.read().decode('utf-8')
-            logger.info(f"Fetched {len(content)} bytes from service reference")
+        logger.info(f"Fetched {len(services)} services from AWS reference")
+        return services
 
-            data = json.loads(content)
-            logger.info(f"Data type: {type(data).__name__}")
-
-            services = set()
-            if isinstance(data, dict):
-                logger.info(f"Top-level dict keys: {list(data.keys())[:10]}")  # First 10 keys
-                if 'services' in data:
-                    services = set(data['services'].keys())
-                    logger.info(f"Found 'services' key with {len(services)} entries")
-                elif len(data) > 0:
-                    # Try to detect if dict values look like service names
-                    first_key = next(iter(data))
-                    first_val = data[first_key]
-                    logger.info(f"First item: {first_key} -> {type(first_val).__name__}")
-                    services = set(data.keys())
-            elif isinstance(data, list):
-                logger.info(f"Data is list with {len(data)} items")
-                if len(data) > 0:
-                    first_item = data[0]
-                    logger.info(f"First item type: {type(first_item).__name__}, content: {first_item if isinstance(first_item, (str, int)) else str(first_item)[:200]}")
-
-                services = set()
-                for item in data:
-                    if isinstance(item, dict):
-                        # Extract service name from dict - try common keys
-                        if 'service' in item:
-                            services.add(item['service'])
-                        elif 'name' in item:
-                            services.add(item['name'])
-                        elif 'id' in item:
-                            services.add(item['id'])
-                        elif 'serviceName' in item:
-                            services.add(item['serviceName'])
-                    elif isinstance(item, str):
-                        services.add(item)
-
-            logger.info(f"Fetched {len(services)} services from AWS reference")
-            return services
-
-    except Exception as e:
-        logger.error(f"Failed to fetch AWS services: {str(e)}", exc_info=True)
+    except requests.exceptions.SSLError as e:
+        logger.error(f"SSL certificate validation failed: {str(e)}")
+        return set()
+    except requests.exceptions.RequestException as e:
+        logger.error(f"Failed to fetch AWS services: {str(e)}")
+        return set()
+    except (json.JSONDecodeError, KeyError) as e:
+        logger.error(f"Failed to parse service reference response: {str(e)}")
         return set()
 
 
@@ -187,11 +156,12 @@ def verify_baseline_integrity() -> Tuple[bool, str]:
         if stored_checksum == calculated_checksum:
             logger.info(f"Baseline integrity verified ✓ (checksum: {calculated_checksum[:8]}...)")
             return True, "Baseline integrity verified"
-        logger.error("BASELINE INTEGRITY VIOLATION DETECTED")
-        logger.error("  Expected: %s", stored_checksum)
-        logger.error("  Actual:   %s", calculated_checksum)
-        logger.error("  Services: %d", len(services))
-        return False, f"Checksum mismatch: expected {stored_checksum[:8]}, got {calculated_checksum[:8]}"
+        else:
+            logger.error(f"BASELINE INTEGRITY VIOLATION DETECTED")
+            logger.error(f"  Expected: {stored_checksum}")
+            logger.error(f"  Actual:   {calculated_checksum}")
+            logger.error(f"  Services: {len(services)}")
+            return False, f"Checksum mismatch: expected {stored_checksum[:8]}, got {calculated_checksum[:8]}"
 
     except Exception as e:
         logger.error(f"Error verifying baseline integrity: {str(e)}")
@@ -233,7 +203,7 @@ def initialize_baseline(services: Set[str]) -> bool:
         )
 
         # Store all current services as baseline
-        with table.batch_writer() as batch:
+        with table.batch_writer(batch_size=25) as batch:
             for service in services:
                 batch.put_item(Item={
                     'service_name': service,
@@ -249,17 +219,18 @@ def initialize_baseline(services: Set[str]) -> bool:
         logger.info(f"Baseline checksum: {checksum[:16]}... (stored for integrity verification)")
 
         if snapshot_stored and BASELINE_SNAPSHOT_BUCKET:
-            logger.info("Immutable baseline snapshot stored in S3")
+            logger.info(f"Immutable baseline snapshot stored in S3")
 
         return True
 
     except Exception as e:
         # Check if this is a race condition (baseline already exists)
         if 'ConditionalCheckFailedException' in str(type(e).__name__):
-            logger.warning("Baseline already initialized (race condition prevented)")
+            logger.warning(f"Baseline already initialized (race condition prevented)")
             return True  # Not an error - baseline is already set
-        logger.error("Error initializing baseline: %s", str(e))
-        return False
+        else:
+            logger.error(f"Error initializing baseline: {str(e)}")
+            return False
 
 
 def get_tracked_services() -> Set[str]:
@@ -365,7 +336,7 @@ def store_new_services(services: List[str]) -> None:
         table = dynamodb.Table(DYNAMODB_TABLE)
         timestamp = datetime.utcnow().isoformat()
 
-        with table.batch_writer() as batch:
+        with table.batch_writer(batch_size=25) as batch:
             for service in services:
                 batch.put_item(Item={
                     'service_name': service,
@@ -373,10 +344,10 @@ def store_new_services(services: List[str]) -> None:
                     'last_updated': timestamp
                 })
 
-        logger.info(f"Stored {len(services)} new services in DynamoDB")
+        print(f"Stored {len(services)} new services in DynamoDB")
 
     except Exception as e:
-        logger.error(f"Error storing services: {str(e)}")
+        print(f"Error storing services: {str(e)}")
 
 
 def get_scp_policy() -> Dict:
@@ -391,7 +362,7 @@ def get_scp_policy() -> Dict:
                 break
 
         if not scp_id:
-            logger.warning(f"SCP '{SCP_NAME}' not found")
+            print(f"SCP '{SCP_NAME}' not found")
             return None
 
         policy_details = organizations.describe_policy(PolicyId=scp_id)
@@ -400,7 +371,7 @@ def get_scp_policy() -> Dict:
         return {'id': scp_id, 'content': policy_content}
 
     except Exception as e:
-        logger.error(f"Error getting SCP policy: {str(e)}")
+        print(f"Error getting SCP policy: {str(e)}")
         return None
 
 
@@ -413,13 +384,13 @@ def generate_scp_preview(scp_policy: Dict, new_services: List[str]) -> Dict:
 
     deny_statement = None
     for statement in policy_content['Statement']:
-        if statement.get('Sid') == SCP_SID:
+        if statement.get('Effect') == 'Deny':
             deny_statement = statement
             break
 
     if not deny_statement:
         deny_statement = {
-            'Sid': SCP_SID,
+            'Sid': 'DenyNewServices',
             'Effect': 'Deny',
             'Action': '*',
             'Resource': '*'
@@ -464,13 +435,13 @@ def update_scp_with_services(scp_policy: Dict, new_services: List[str]) -> Tuple
 
         deny_statement = None
         for statement in policy_content['Statement']:
-            if statement.get('Sid') == SCP_SID:
+            if statement.get('Effect') == 'Deny':
                 deny_statement = statement
                 break
 
         if not deny_statement:
             deny_statement = {
-                'Sid': SCP_SID,
+                'Sid': 'DenyNewServices',
                 'Effect': 'Deny',
                 'Action': '*',
                 'Resource': '*'
@@ -710,7 +681,7 @@ Actions:
 5. Consider restoring from PITR if tampering confirmed
 6. Initiate incident response procedures
 
-Dashboard: https://console.aws.amazon.com/cloudwatch/home?region={os.environ.get('AWS_REGION', 'us-east-1')}#dashboards:name=aws-service-monitor
+Dashboard: https://console.aws.amazon.com/cloudwatch/home?region={os.environ.get('AWS_REGION', 'eu-west-2')}#dashboards:name=aws-service-monitor
 """
         )
         logger.info("Sent baseline integrity violation alert via SNS")
@@ -775,34 +746,9 @@ def get_scp_status_message(status: str) -> Tuple[str, str]:
 
 def generate_html_email(services: List[str], timestamp: str, scp_status: str = 'unknown') -> str:
     """Generate formatted HTML email with proper escaping."""
+    from html import escape
     services_html = '\n'.join([f'                <li>{escape(service)}</li>' for service in sorted(services)])
     status_title, status_message = get_scp_status_message(scp_status)
-    is_scp_managed = scp_status != 'disabled'
-
-    actions = """                    <li>✓ Service names validated</li>
-                    <li>✓ Service registry updated in DynamoDB</li>"""
-    if is_scp_managed:
-        actions += """
-                    <li>✓ SCP change preview generated</li>"""
-    actions += """
-                    <li>✓ Notification email sent</li>"""
-
-    next_steps = ""
-    if is_scp_managed:
-        next_steps = """
-                <p><strong>Next Steps:</strong></p>
-                <ul>
-                    <li>Review the new services in the SCP</li>
-                    <li>Verify organization policies are applied correctly</li>
-                    <li>Monitor CloudWatch logs for any policy enforcement issues</li>
-                    <li>Check AWS CloudTrail for policy modification events</li>
-                </ul>"""
-
-    status_section = f"""
-                <div class="status-box">
-                    <div class="status-title">{status_title}</div>
-                    <p>{status_message}</p>
-                </div>""" if is_scp_managed else ""
 
     html = f"""
     <html>
@@ -832,7 +778,11 @@ def generate_html_email(services: List[str], timestamp: str, scp_status: str = '
                 <h2>New AWS Services Detected</h2>
 
                 <p>The AWS service monitoring job has identified <strong>{len(services)} new service(s)</strong> as of {timestamp}.</p>
-{status_section}
+
+                <div class="status-box">
+                    <div class="status-title">{status_title}</div>
+                    <p>{status_message}</p>
+                </div>
 
                 <div class="service-list">
                     <h3>New Services:</h3>
@@ -843,9 +793,19 @@ def generate_html_email(services: List[str], timestamp: str, scp_status: str = '
 
                 <p><strong>Actions Taken:</strong></p>
                 <ul>
-{actions}
+                    <li>✓ Service names validated</li>
+                    <li>✓ Service registry updated in DynamoDB</li>
+                    <li>✓ SCP change preview generated</li>
+                    <li>✓ Notification email sent</li>
                 </ul>
-{next_steps}
+
+                <p><strong>Next Steps:</strong></p>
+                <ul>
+                    <li>Review the new services in the SCP</li>
+                    <li>Verify organization policies are applied correctly</li>
+                    <li>Monitor CloudWatch logs for any policy enforcement issues</li>
+                    <li>Check AWS CloudTrail for policy modification events</li>
+                </ul>
             </div>
 
             <div class="footer">
@@ -864,24 +824,6 @@ def generate_text_email(services: List[str], timestamp: str, scp_status: str = '
     """Generate plain text email with proper escaping."""
     services_text = '\n'.join([f'  - {service}' for service in sorted(services)])
     status_title, status_message = get_scp_status_message(scp_status)
-    is_scp_managed = scp_status != 'disabled'
-
-    status_section = f"STATUS: {status_title}\n{status_message}\n\n" if is_scp_managed else ""
-
-    actions = "ACTIONS TAKEN:\n  ✓ Service names validated\n  ✓ Service registry updated in DynamoDB"
-    if is_scp_managed:
-        actions += "\n  ✓ SCP change preview generated"
-    actions += "\n  ✓ Notification email sent\n"
-
-    next_steps = ""
-    if is_scp_managed:
-        next_steps = """
-NEXT STEPS:
-  - Review the new services in the SCP
-  - Verify organization policies are applied correctly
-  - Monitor CloudWatch logs for any policy enforcement issues
-  - Check AWS CloudTrail for policy modification events
-"""
 
     text = f"""AWS SERVICE MONITOR ALERT
 {"="*50}
@@ -890,10 +832,25 @@ New AWS Services Detected
 
 The AWS service monitoring job has identified {len(services)} new service(s) as of {timestamp}.
 
-{status_section}NEW SERVICES:
+STATUS: {status_title}
+{status_message}
+
+NEW SERVICES:
 {services_text}
 
-{actions}{next_steps}{"="*50}
+ACTIONS TAKEN:
+  ✓ Service names validated
+  ✓ Service registry updated in DynamoDB
+  ✓ SCP change preview generated
+  ✓ Notification email sent
+
+NEXT STEPS:
+  - Review the new services in the SCP
+  - Verify organization policies are applied correctly
+  - Monitor CloudWatch logs for any policy enforcement issues
+  - Check AWS CloudTrail for policy modification events
+
+{"="*50}
 This is an automated notification from AWS Service Monitor.
 Scan Time: {timestamp}
 """
@@ -940,14 +897,15 @@ def lambda_handler(event, context):
                         'scan_time': start_time
                     })
                 }
-            logger.error("Failed to initialize baseline")
-            return {
-                'statusCode': 500,
-                'body': json.dumps({
-                    'error': 'Failed to initialize baseline',
-                    'scan_time': start_time
-                })
-            }
+            else:
+                logger.error("Failed to initialize baseline")
+                return {
+                    'statusCode': 500,
+                    'body': json.dumps({
+                        'error': 'Failed to initialize baseline',
+                        'scan_time': start_time
+                    })
+                }
 
         # Verify baseline integrity (detect tampering)
         is_valid, integrity_msg = verify_baseline_integrity()
@@ -996,36 +954,31 @@ def lambda_handler(event, context):
             # Store new services in DynamoDB
             store_new_services(new_services_list)
 
+            # Get SCP policy
+            scp_policy = get_scp_policy()
             scp_update_status = 'not_attempted'
             scp_error = None
 
-            if MANAGE_SCP_POLICY:
-                # Get SCP policy
-                scp_policy = get_scp_policy()
+            if scp_policy:
+                # Generate preview first
+                preview = generate_scp_preview(scp_policy, new_services_list)
 
-                if scp_policy:
-                    # Generate preview first
-                    preview = generate_scp_preview(scp_policy, new_services_list)
-
-                    if REQUIRE_APPROVAL:
-                        logger.info("Approval required - storing preview for manual review")
-                        scp_update_status = 'pending_approval'
-                        # Store preview in DynamoDB for approval workflow
-                        store_pending_scp_update(preview)
-                    else:
-                        # Update SCP with validation
-                        success, message = update_scp_with_services(scp_policy, new_services_list)
-                        scp_update_status = 'success' if success else 'failed'
-                        scp_error = message if not success else None
-                        logger.info(f"SCP update result: {message}")
+                if REQUIRE_APPROVAL:
+                    logger.info("Approval required - storing preview for manual review")
+                    scp_update_status = 'pending_approval'
+                    # Store preview in DynamoDB for approval workflow
+                    store_pending_scp_update(preview)
                 else:
-                    logger.warning(f"SCP '{SCP_NAME}' not found")
-                    scp_update_status = 'not_found'
+                    # Update SCP with validation
+                    success, message = update_scp_with_services(scp_policy, new_services_list)
+                    scp_update_status = 'success' if success else 'failed'
+                    scp_error = message if not success else None
+                    logger.info(f"SCP update result: {message}")
             else:
-                logger.info("SCP management disabled - skipping policy updates")
-                scp_update_status = 'disabled'
+                logger.warning(f"SCP '{SCP_NAME}' not found")
+                scp_update_status = 'not_found'
 
-            # Send notification email (always enabled)
+            # Send notification email
             send_notification_email(new_services_list, scp_update_status)
 
             # Publish metrics for dashboard and alarms
@@ -1049,16 +1002,17 @@ def lambda_handler(event, context):
                 'statusCode': response['statusCode'],
                 'body': json.dumps(response['body'])
             }
-        logger.info("No new services detected")
-        # Publish metrics for dashboard and alarms
-        publish_metrics(0, len(tracked_services), True)
-        return {
-            'statusCode': 200,
-            'body': json.dumps({
-                'message': 'No new services detected',
-                'scan_time': start_time
-            })
-        }
+        else:
+            logger.info("No new services detected")
+            # Publish metrics for dashboard and alarms
+            publish_metrics(0, len(tracked_services), True)
+            return {
+                'statusCode': 200,
+                'body': json.dumps({
+                    'message': 'No new services detected',
+                    'scan_time': start_time
+                })
+            }
 
     except Exception as e:
         logger.exception(f"Unexpected error in lambda_handler: {str(e)}")
@@ -1085,7 +1039,7 @@ def store_pending_scp_update(preview: Dict) -> None:
             'status': 'pending_approval'
         })
 
-        logger.info("Stored pending SCP update for approval")
+        logger.info(f"Stored pending SCP update for approval")
 
     except Exception as e:
-        logger.error("Error storing pending SCP update: %s", str(e))
+        logger.error(f"Error storing pending SCP update: {str(e)}")

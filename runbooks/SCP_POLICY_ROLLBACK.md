@@ -13,8 +13,6 @@
 - SCP update caused service outages
 - Need to reverse recent SCP changes
 
-**Note**: The Lambda function now targets a specific statement by ID (Sid), so only the configured statement is modified. Other statements in the SCP remain untouched, reducing the blast radius of changes.
-
 ---
 
 ## Immediate Action (< 5 min)
@@ -26,13 +24,13 @@
 # List SCP attachments
 aws organizations list-targets-for-policy \
   --policy-id p-xxxxxxxx \
-  --region us-east-1
+  --region eu-west-2
 
 # Detach from root/targets
 aws organizations detach-policy \
   --policy-id p-xxxxxxxx \
   --target-id r-xxxx \
-  --region us-east-1
+  --region eu-west-2
 
 # Services now accessible again - emergency resolved
 ```
@@ -43,7 +41,7 @@ aws organizations detach-policy \
 aws organizations describe-policy \
   --policy-id p-xxxxxxxx \
   --content \
-  --region us-east-1 | jq '.Content | fromjson' > current-policy.json
+  --region eu-west-2 | jq '.Content | fromjson' > current-policy.json
 
 # Edit to remove problematic services
 vi current-policy.json
@@ -53,7 +51,7 @@ vi current-policy.json
 aws organizations update-policy \
   --policy-id p-xxxxxxxx \
   --content file://current-policy.json \
-  --region us-east-1
+  --region eu-west-2
 ```
 
 ### Step 2: Notify Stakeholders
@@ -73,14 +71,14 @@ aws organizations update-policy \
 aws organizations describe-policy \
   --policy-id p-xxxxxxxx \
   --content \
-  --region us-east-1 | jq '.Content | fromjson' > current-policy.json
+  --region eu-west-2 | jq '.Content | fromjson' > current-policy.json
 
 # Get previous version from CloudTrail
 aws cloudtrail lookup-events \
   --lookup-attributes AttributeKey=ResourceName,AttributeValue=p-xxxxxxxx \
   --lookup-attributes AttributeKey=EventName,AttributeValue=UpdatePolicy \
   --max-results 5 \
-  --region us-east-1 | jq '.Events[0].CloudTrailEvent | fromjson'
+  --region eu-west-2 | jq '.Events[0].CloudTrailEvent | fromjson'
 
 # Extract policy from event and save
 # Compare two policies to see what changed
@@ -100,7 +98,7 @@ diff previous-policy.json current-policy.json
 aws logs filter-log-events \
   --log-group-name /aws/lambda/aws-service-monitor \
   --filter-pattern "invalid\|failed validation\|ERROR" \
-  --region us-east-1 \
+  --region eu-west-2 \
   --start-time $(date -d '24 hours ago' +%s)000
 ```
 
@@ -178,13 +176,13 @@ EOF
 aws organizations update-policy \
   --policy-id p-xxxxxxxx \
   --content file://correct-policy.json \
-  --region us-east-1
+  --region eu-west-2
 
 # Verify update
 aws organizations describe-policy \
   --policy-id p-xxxxxxxx \
   --content \
-  --region us-east-1 | jq '.Content | fromjson | .Statement[0].Resource | length'
+  --region eu-west-2 | jq '.Content | fromjson | .Statement[0].Resource | length'
 ```
 
 ---

@@ -150,7 +150,7 @@ Day 2 onwards
 aws dynamodb get-item \
   --table-name aws-service-monitor-registry \
   --key '{"service_name":{"S":"__baseline_initialized__"}}' \
-  --region us-east-1
+  --region eu-west-2
 ```
 
 Expected output:
@@ -173,7 +173,7 @@ aws dynamodb scan \
   --table-name aws-service-monitor-registry \
   --filter-expression "attribute_exists(is_baseline)" \
   --select COUNT \
-  --region us-east-1
+  --region eu-west-2
 ```
 
 ### List All Baseline Services
@@ -184,7 +184,7 @@ aws dynamodb scan \
   --filter-expression "is_baseline = :b" \
   --expression-attribute-values '{":b":{"BOOL":true}}' \
   --projection-expression "service_name" \
-  --region us-east-1
+  --region eu-west-2
 ```
 
 ## Resetting Baseline (If Needed)
@@ -196,7 +196,7 @@ If you need to reset the baseline and reinitialize:
 # Delete all items
 aws dynamodb delete-table \
   --table-name aws-service-monitor-registry \
-  --region us-east-1
+  --region eu-west-2
 
 # Wait for deletion (about 30 seconds)
 sleep 30
@@ -211,7 +211,7 @@ terraform apply
 aws dynamodb delete-item \
   --table-name aws-service-monitor-registry \
   --key '{"service_name":{"S":"__baseline_initialized__"}}' \
-  --region us-east-1
+  --region eu-west-2
 
 # Next Lambda run will reinitialize baseline
 ```
@@ -222,12 +222,12 @@ aws dynamodb delete-item \
 aws dynamodb scan \
   --table-name aws-service-monitor-registry \
   --projection-expression "service_name" \
-  --region us-east-1 | jq -r '.Items[] | select(.service_name.S != "__baseline_initialized__") | .service_name.S' | \
+  --region eu-west-2 | jq -r '.Items[] | select(.service_name.S != "__baseline_initialized__") | .service_name.S' | \
   while read service; do
     aws dynamodb delete-item \
       --table-name aws-service-monitor-registry \
       --key "{\"service_name\":{\"S\":\"$service\"}}" \
-      --region us-east-1
+      --region eu-west-2
   done
 ```
 
@@ -311,7 +311,7 @@ aws logs tail /aws/lambda/aws-service-monitor --follow --filter-pattern "BASELIN
 # Check DynamoDB table exists
 aws dynamodb describe-table \
   --table-name aws-service-monitor-registry \
-  --region us-east-1
+  --region eu-west-2
 
 # Check Lambda IAM permissions
 aws iam get-role-policy \
@@ -328,7 +328,7 @@ If baseline service count doesn't match AWS reference:
 BASELINE=$(aws dynamodb get-item \
   --table-name aws-service-monitor-registry \
   --key '{"service_name":{"S":"__baseline_initialized__"}}' \
-  --region us-east-1 | jq -r '.Item.service_count.N')
+  --region eu-west-2 | jq -r '.Item.service_count.N')
 
 echo "Baseline: $BASELINE services"
 

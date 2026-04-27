@@ -1,7 +1,7 @@
 variable "aws_region" {
   description = "AWS region for the management account"
   type        = string
-  default     = "us-east-1"
+  default     = "eu-west-2"
 }
 
 variable "schedule_expression" {
@@ -22,6 +22,12 @@ variable "scp_sid" {
   default     = "BlockNewServices"
 }
 
+variable "manage_scp_policy" {
+  description = "Enable/disable automatic SCP policy management. When disabled, only notifications are sent."
+  type        = bool
+  default     = true
+}
+
 variable "email_recipients" {
   description = "Email addresses to receive notifications"
   type        = list(string)
@@ -34,12 +40,6 @@ variable "sender_email" {
 
 variable "require_scp_approval" {
   description = "Require manual approval before updating SCP (dry-run mode)"
-  type        = bool
-  default     = true
-}
-
-variable "manage_scp_policy" {
-  description = "Enable/disable automatic SCP policy management. When disabled, only notifications are sent."
   type        = bool
   default     = true
 }

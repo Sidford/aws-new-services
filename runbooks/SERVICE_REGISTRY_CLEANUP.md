@@ -49,7 +49,7 @@ aws dynamodb scan \
 
 ```bash
 # Get current AWS services
-curl -s https://servicereference.us-east-1.amazonaws.com/ | jq '.services | keys' > current_services.json
+curl -s https://servicereference.eu-west-2.amazonaws.com/ | jq '.services | keys' > current_services.json
 
 # Check which candidates are in current AWS services
 cat stale_candidates.txt | while read service; do
@@ -87,7 +87,7 @@ aws dynamodb create-backup \
 
 # Export data
 aws dynamodb export-table-to-point-in-time \
-  --table-arn arn:aws:dynamodb:us-east-1:ACCOUNT:table/aws-service-monitor-registry \
+  --table-arn arn:aws:dynamodb:eu-west-2:ACCOUNT:table/aws-service-monitor-registry \
   --s3-bucket my-backup-bucket \
   --s3-prefix cleanup-export-$(date +%Y%m%d-%H%M%S) \
   --export-format JSON
@@ -102,7 +102,7 @@ cat services_to_delete.txt | while read service; do
   aws dynamodb delete-item \
     --table-name aws-service-monitor-registry \
     --key "{\"service_name\":{\"S\":\"$service\"}}" \
-    --region us-east-1
+    --region eu-west-2
 done
 ```
 
@@ -153,7 +153,7 @@ EOF
 aws lambda invoke \
   --function-name aws-service-monitor \
   --payload '{}' \
-  --region us-east-1 \
+  --region eu-west-2 \
   verify-response.json
 
 cat verify-response.json | jq '.'

@@ -16,8 +16,6 @@ resource "aws_s3_bucket_versioning" "baseline_snapshots" {
 resource "aws_s3_bucket_object_lock_configuration" "baseline_snapshots" {
   bucket = aws_s3_bucket.baseline_snapshots.id
 
-  depends_on = [aws_s3_bucket_versioning.baseline_snapshots]
-
   rule {
     default_retention {
       mode = "GOVERNANCE"
@@ -51,7 +49,6 @@ resource "aws_s3_bucket_lifecycle_configuration" "baseline_snapshots" {
   rule {
     id     = "delete_old_snapshots"
     status = "Enabled"
-    filter {}
 
     # Delete snapshots older than 1 year
     expiration {
@@ -76,7 +73,7 @@ resource "aws_dynamodb_table" "service_registry" {
     type = "S"
   }
 
-  point_in_time_recovery {
+  point_in_time_recovery_specification {
     enabled = true
   }
 
@@ -123,9 +120,7 @@ resource "aws_iam_role_policy" "lambda_dynamodb_policy" {
           "dynamodb:PutItem",
           "dynamodb:UpdateItem",
           "dynamodb:Query",
-          "dynamodb:Scan",
-          "dynamodb:BatchWriteItem",
-          "dynamodb:BatchGetItem"
+          "dynamodb:Scan"
         ]
         Resource = aws_dynamodb_table.service_registry.arn
       }
@@ -275,26 +270,11 @@ resource "aws_sns_topic_subscription" "alert_emails" {
   endpoint  = var.email_recipients[count.index]
 }
 
-# Build Lambda package with dependencies
-resource "null_resource" "lambda_build" {
-  triggers = {
-    index_hash = filemd5("${path.module}/lambda/index.py")
-    requirements_hash = filemd5("${path.module}/lambda/requirements.txt")
-  }
-
-  provisioner "local-exec" {
-    command = "bash ${path.module}/build_lambda.sh"
-    working_dir = path.module
-  }
-}
-
 # Archive the Lambda function code
 data "archive_file" "lambda_code" {
   type        = "zip"
   source_dir  = "${path.module}/lambda"
   output_path = "${path.module}/lambda.zip"
-
-  depends_on = [null_resource.lambda_build]
 }
 
 # Lambda function
@@ -311,11 +291,10 @@ resource "aws_lambda_function" "service_monitor" {
     variables = {
       DYNAMODB_TABLE            = aws_dynamodb_table.service_registry.name
       SCP_NAME                  = var.scp_name
-      SCP_SID                   = var.scp_sid
       EMAIL_RECIPIENTS          = jsonencode(var.email_recipients)
       SENDER_EMAIL              = var.sender_email
+      AWS_REGION                = var.aws_region
       REQUIRE_APPROVAL          = var.require_scp_approval ? "true" : "false"
-      MANAGE_SCP_POLICY         = var.manage_scp_policy ? "true" : "false"
       BASELINE_SNAPSHOT_BUCKET  = aws_s3_bucket.baseline_snapshots.id
       ALERT_TOPIC_ARN           = aws_sns_topic.alerts.arn
     }

@@ -458,7 +458,7 @@ These enhancements are recommended but not critical:
 # Lambda will reject non-HTTPS connections or bad certificates
 aws lambda invoke \
   --function-name aws-service-monitor \
-  --region us-east-1 \
+  --region eu-west-2 \
   response.json
 ```
 
@@ -514,7 +514,7 @@ aws iam get-role-policy \
 ```bash
 aws lambda invoke \
   --function-name aws-service-monitor \
-  --region us-east-1 \
+  --region eu-west-2 \
   response.json
   
 cat response.json

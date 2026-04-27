@@ -187,23 +187,14 @@ resource "aws_cloudwatch_dashboard" "service_monitor" {
         y      = 18
       },
 
-      # Widget 8: Lambda Error Rate (5-minute)
+      # Widget 8: Lambda Logs (Recent Errors)
       {
-        type = "metric"
+        type = "log"
         properties = {
-          metrics = [
-            ["AWS/Lambda", "Errors", { stat = "Sum", label = "Total Errors" }],
-            [".", "Invocations", { stat = "Sum", label = "Total Invocations" }]
-          ]
-          period = 300
-          stat   = "Average"
-          region = var.aws_region
-          title  = "Lambda Error Rate (5-minute)"
-          yAxis = {
-            left = {
-              min = 0
-            }
-          }
+          query   = "fields @timestamp, @message | filter @message like /ERROR/ | stats count() by @message | sort count() desc | limit 10"
+          region  = var.aws_region
+          title   = "Recent Lambda Errors (Last Hour)"
+          queryId = "recent-errors"
         }
         width  = 12
         height = 6
@@ -211,27 +202,14 @@ resource "aws_cloudwatch_dashboard" "service_monitor" {
         y      = 18
       },
 
-      # Widget 9: Lambda Throttles
+      # Widget 9: CloudWatch Logs Insights - Execution Timeline
       {
-        type = "metric"
+        type = "log"
         properties = {
-          metrics = [
-            ["AWS/Lambda", "Throttles", { stat = "Sum", label = "Throttles" }]
-          ]
-          period = 300
-          stat   = "Sum"
-          region = var.aws_region
-          title  = "Lambda Throttles (5-minute)"
-          yAxis = {
-            left = {
-              min = 0
-            }
-          }
-          alarm_colors = {
-            alarm_color  = "#d13212"
-            ok_color     = "#2ca02c"
-            insufficient_data_color = "#cccccc"
-          }
+          query   = "fields @timestamp, @message | filter @message like /Starting AWS service monitor|Processed|No new services/ | sort @timestamp desc | limit 20"
+          region  = var.aws_region
+          title   = "Execution Timeline (Recent Runs)"
+          queryId = "execution-timeline"
         }
         width  = 24
         height = 6
