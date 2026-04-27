@@ -1,7 +1,7 @@
 variable "aws_region" {
   description = "AWS region for the management account"
   type        = string
-  default     = "us-east-1"
+  default     = "eu-west-2"
 }
 
 variable "schedule_expression" {

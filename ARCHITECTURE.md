@@ -27,7 +27,7 @@ Comprehensive architecture documentation for the AWS Service Monitor system, inc
 ```mermaid
 graph TB
     subgraph "External Data Sources"
-        AWS["🌐 AWS Service Reference<br/>(servicereference.us-east-1.amazonaws.com)"]
+        AWS["🌐 AWS Service Reference<br/>(servicereference.eu-west-2.amazonaws.com)"]
     end
     
     subgraph "AWS Management Account"
@@ -72,7 +72,7 @@ graph TB
 ```mermaid
 graph TB
     subgraph "External Data Sources"
-        AWS["AWS Service Reference<br/>(servicereference.us-east-1.amazonaws.com)"]
+        AWS["AWS Service Reference<br/>(servicereference.eu-west-2.amazonaws.com)"]
     end
     
     subgraph "AWS Management Account"
@@ -495,7 +495,7 @@ Organizations API      | API calls          | Free
 ## High Availability Considerations
 
 ### Current Architecture
-- **Single Region**: Management account (us-east-1)
+- **Single Region**: Management account (eu-west-2)
 - **Single Schedule**: Daily at 8 AM UTC
 - **No Backup Lambda**: Single function invocation
 

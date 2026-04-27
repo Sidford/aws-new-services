@@ -205,7 +205,7 @@ terraform apply
 ```bash
 aws lambda invoke \
   --function-name aws-service-monitor \
-  --region us-east-1 \
+  --region eu-west-2 \
   response.json
 ```
 
@@ -482,7 +482,7 @@ zip -r lambda.zip lambda/
 aws lambda update-function-code \
   --function-name aws-service-monitor \
   --zip-file fileb://lambda.zip \
-  --region us-east-1
+  --region eu-west-2
 ```
 
 ## Version Control

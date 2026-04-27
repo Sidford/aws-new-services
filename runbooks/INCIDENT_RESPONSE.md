@@ -69,13 +69,13 @@ Severity LOW → Go to INFORMATIONAL section below
 # Check rule status
 aws events describe-rule \
   --name aws-service-monitor-daily \
-  --region us-east-1
+  --region eu-west-2
 
 # Expected: State = ENABLED
 # If disabled:
 aws events enable-rule \
   --name aws-service-monitor-daily \
-  --region us-east-1
+  --region eu-west-2
 ```
 
 **Timeline**: 2-5 minutes

@@ -52,15 +52,15 @@ RESTORE_TIME=$(date -u -d '2 hours ago' +%Y-%m-%dT%H:%M:%S)
 
 # Initiate restore (creates new table)
 aws dynamodb restore-table-from-backup \
-  --backup-arn arn:aws:dynamodb:us-east-1:ACCOUNT:table/aws-service-monitor-registry/backup/01234567890123-a1b2c3d4 \
-  --region us-east-1
+  --backup-arn arn:aws:dynamodb:eu-west-2:ACCOUNT:table/aws-service-monitor-registry/backup/01234567890123-a1b2c3d4 \
+  --region eu-west-2
   
 # OR restore to point-in-time
 aws dynamodb restore-table-to-point-in-time \
   --source-table-name aws-service-monitor-registry \
   --target-table-name aws-service-monitor-registry-restored \
   --restore-date-time $(date -d "$RESTORE_TIME" +%s) \
-  --region us-east-1
+  --region eu-west-2
 ```
 
 ### Step 3: Wait for Restore Completion
@@ -69,7 +69,7 @@ aws dynamodb restore-table-to-point-in-time \
 # Monitor restore progress (takes 1-2 hours)
 watch -n 10 'aws dynamodb describe-table \
   --table-name aws-service-monitor-registry-restored \
-  --region us-east-1 | jq "{Status: .Table.TableStatus, Created: .Table.CreationDateTime}"'
+  --region eu-west-2 | jq "{Status: .Table.TableStatus, Created: .Table.CreationDateTime}"'
 
 # Wait until Status = ACTIVE
 ```
@@ -103,11 +103,11 @@ aws dynamodb get-item \
 aws dynamodb create-backup \
   --table-name aws-service-monitor-registry \
   --backup-name pre-restore-backup-$(date +%Y%m%d-%H%M%S) \
-  --region us-east-1
+  --region eu-west-2
 
 # Wait for backup to complete
 aws dynamodb describe-backup \
-  --backup-arn arn:aws:dynamodb:us-east-1:ACCOUNT:table/aws-service-monitor-registry/backup/01234567890123-a1b2c3d4 \
+  --backup-arn arn:aws:dynamodb:eu-west-2:ACCOUNT:table/aws-service-monitor-registry/backup/01234567890123-a1b2c3d4 \
   | jq '.BackupDescription.BackupDetails | {BackupStatus, BackupSizeBytes}'
 ```
 
@@ -126,7 +126,7 @@ aws dynamodb delete-table \
 
 # 3. Rename restored -> original
 aws dynamodb tag-resource \
-  --resource-arn arn:aws:dynamodb:us-east-1:ACCOUNT:table/aws-service-monitor-registry-restored \
+  --resource-arn arn:aws:dynamodb:eu-west-2:ACCOUNT:table/aws-service-monitor-registry-restored \
   --tags AttributeName=OriginalName,AttributeValue=aws-service-monitor-registry
 
 # Re-create with Terraform or manually rename
@@ -144,13 +144,13 @@ aws dynamodb tag-resource \
 aws lambda update-function-configuration \
   --function-name aws-service-monitor \
   --environment Variables='{...DYNAMODB_TABLE=aws-service-monitor-registry...}' \
-  --region us-east-1
+  --region eu-west-2
 
 # Verify Lambda can access table
 aws lambda invoke \
   --function-name aws-service-monitor \
   --payload '{}' \
-  --region us-east-1 \
+  --region eu-west-2 \
   test-response.json
 
 cat test-response.json | jq '.'
@@ -168,7 +168,7 @@ aws logs tail /aws/lambda/aws-service-monitor \
 # Verify no alarms firing
 aws cloudwatch describe-alarms \
   --state-value ALARM \
-  --region us-east-1 | jq '.MetricAlarms[] | .AlarmName'
+  --region eu-west-2 | jq '.MetricAlarms[] | .AlarmName'
 
 # Should see no alarms or only expected ones
 ```
@@ -181,11 +181,11 @@ aws cloudwatch describe-alarms \
 # Delete restored table if swap was successful
 aws dynamodb delete-table \
   --table-name aws-service-monitor-registry-restored \
-  --region us-east-1
+  --region eu-west-2
 
 # Delete old backup if all checks pass
 aws dynamodb delete-backup \
-  --backup-arn arn:aws:dynamodb:us-east-1:ACCOUNT:table/aws-service-monitor-registry/backup/OLD_BACKUP_ID
+  --backup-arn arn:aws:dynamodb:eu-west-2:ACCOUNT:table/aws-service-monitor-registry/backup/OLD_BACKUP_ID
 ```
 
 ---

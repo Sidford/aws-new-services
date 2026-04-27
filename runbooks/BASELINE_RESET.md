@@ -33,7 +33,7 @@ aws dynamodb create-backup \
 
 # Export table to S3 for archival
 aws dynamodb export-table-to-point-in-time \
-  --table-arn arn:aws:dynamodb:us-east-1:ACCOUNT:table/aws-service-monitor-registry \
+  --table-arn arn:aws:dynamodb:eu-west-2:ACCOUNT:table/aws-service-monitor-registry \
   --s3-bucket my-backup-bucket \
   --s3-prefix service-monitor-export-$(date +%Y%m%d-%H%M%S) \
   --export-format JSON
@@ -46,7 +46,7 @@ aws dynamodb export-table-to-point-in-time \
 aws dynamodb delete-item \
   --table-name aws-service-monitor-registry \
   --key '{"service_name":{"S":"__baseline_initialized__"}}' \
-  --region us-east-1
+  --region eu-west-2
 ```
 
 ### Step 3: Preserve or Delete Services
@@ -80,7 +80,7 @@ aws dynamodb scan \
 aws lambda invoke \
   --function-name aws-service-monitor \
   --payload '{}' \
-  --region us-east-1 \
+  --region eu-west-2 \
   init-response.json
 
 # Check response
@@ -107,7 +107,7 @@ aws dynamodb scan \
   | jq '.Count'
 
 # Verify S3 snapshot created
-aws s3 ls s3://service-monitor-baseline-ACCOUNT-us-east-1/baseline-snapshots/ \
+aws s3 ls s3://service-monitor-baseline-ACCOUNT-eu-west-2/baseline-snapshots/ \
   | tail -1
 ```
 

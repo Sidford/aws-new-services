@@ -60,7 +60,7 @@ vim terraform.tfvars
 
 **Key Settings**:
 ```hcl
-aws_region       = "us-east-1"
+aws_region       = "eu-west-2"
 scp_name         = "blacklist"
 email_recipients = ["ops-team@example.com"]
 sender_email     = "aws-monitor@example.com"
@@ -90,7 +90,7 @@ terraform apply
 aws lambda list-functions | grep aws-service-monitor
 
 # View CloudWatch Dashboard
-# https://console.aws.amazon.com/cloudwatch/home?region=us-east-1#dashboards:name=aws-service-monitor
+# https://console.aws.amazon.com/cloudwatch/home?region=eu-west-2#dashboards:name=aws-service-monitor
 
 # Test manually
 aws lambda invoke --function-name aws-service-monitor /dev/stdout | jq '.'
@@ -149,48 +149,7 @@ graph TB
     SES -->|Email| EMAIL
 ```
 
-### Data Flow
-
-```mermaid
-sequenceDiagram
-    participant EB as EventBridge
-    participant Lambda as Lambda
-    participant API as Service Ref
-    participant DB as DynamoDB
-    participant ORG as Organizations
-    
-    EB->>Lambda: Invoke (daily)
-    activate Lambda
-    
-    rect rgb(200, 220, 255)
-        Note over Lambda: 1. Initialize
-        Lambda->>DB: Check baseline
-        DB-->>Lambda: Baseline status
-    end
-    
-    rect rgb(220, 200, 255)
-        Note over Lambda: 2. Detect
-        Lambda->>API: Fetch services
-        API-->>Lambda: JSON
-        Lambda->>DB: Get tracked
-        DB-->>Lambda: Services
-        Lambda->>Lambda: new = current - tracked
-    end
-    
-    rect rgb(255, 220, 200)
-        alt Has New Services
-            Note over Lambda: 3. Process
-            Lambda->>DB: Store new
-            Lambda->>ORG: Update SCP
-        else No Changes
-            Note over Lambda: Skip
-        end
-    end
-    
-    deactivate Lambda
-```
-
-**For detailed architecture**: See [ARCHITECTURE.md](./ARCHITECTURE.md)
+**For detailed architecture and data flow diagrams**: See [ARCHITECTURE.md](./ARCHITECTURE.md)
 
 ---
 
@@ -198,7 +157,7 @@ sequenceDiagram
 
 ### CloudWatch Dashboard
 
-Access: [AWS Service Monitor Dashboard](https://console.aws.amazon.com/cloudwatch/home?region=us-east-1#dashboards:name=aws-service-monitor)
+Access: [AWS Service Monitor Dashboard](https://console.aws.amazon.com/cloudwatch/home?region=eu-west-2#dashboards:name=aws-service-monitor)
 
 **Displays**:
 - Lambda invocations, errors, duration (avg & p99)
@@ -217,7 +176,7 @@ Access: [AWS Service Monitor Dashboard](https://console.aws.amazon.com/cloudwatc
 | Baseline Integrity | 🔴 CRITICAL | Failed | [Runbook](./runbooks/BASELINE_INTEGRITY_VIOLATION.md) |
 | Missed Execution | 🟠 WARNING | 0/24h | Check EventBridge |
 
-**→ View all alarms**: [CloudWatch Alarms](https://console.aws.amazon.com/cloudwatch/home?region=us-east-1#alarmsV2:alarmFilter=service-monitor)
+**→ View all alarms**: [CloudWatch Alarms](https://console.aws.amazon.com/cloudwatch/home?region=eu-west-2#alarmsV2:alarmFilter=service-monitor)
 
 ---
 
@@ -432,10 +391,10 @@ terraform destroy
 
 ### Quick Links
 
-- 📊 [CloudWatch Dashboard](https://console.aws.amazon.com/cloudwatch/home?region=us-east-1#dashboards:name=aws-service-monitor)
-- 🚨 [Alarms](https://console.aws.amazon.com/cloudwatch/home?region=us-east-1#alarmsV2:alarmFilter=service-monitor)
-- 💾 [DynamoDB Table](https://console.aws.amazon.com/dynamodb/home?region=us-east-1#/tables/aws-service-monitor-registry)
-- 📦 [S3 Snapshots](https://s3.console.aws.amazon.com/s3/buckets?region=us-east-1)
+- 📊 [CloudWatch Dashboard](https://console.aws.amazon.com/cloudwatch/home?region=eu-west-2#dashboards:name=aws-service-monitor)
+- 🚨 [Alarms](https://console.aws.amazon.com/cloudwatch/home?region=eu-west-2#alarmsV2:alarmFilter=service-monitor)
+- 💾 [DynamoDB Table](https://console.aws.amazon.com/dynamodb/home?region=eu-west-2#/tables/aws-service-monitor-registry)
+- 📦 [S3 Snapshots](https://s3.console.aws.amazon.com/s3/buckets?region=eu-west-2)
 
 ### Common Commands
 
@@ -450,7 +409,7 @@ aws cloudwatch describe-alarms | grep service-monitor
 aws sns list-topics | grep service-monitor
 
 # S3 snapshots
-aws s3 ls s3://service-monitor-baseline-$(aws sts get-caller-identity --query Account --output text)-us-east-1/
+aws s3 ls s3://service-monitor-baseline-$(aws sts get-caller-identity --query Account --output text)-eu-west-2/
 ```
 
 ---

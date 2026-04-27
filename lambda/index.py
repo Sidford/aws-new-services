@@ -27,7 +27,7 @@ REQUIRE_APPROVAL = os.environ.get('REQUIRE_APPROVAL', 'true').lower() == 'true'
 BASELINE_SNAPSHOT_BUCKET = os.environ.get('BASELINE_SNAPSHOT_BUCKET', '')
 ALERT_TOPIC_ARN = os.environ.get('ALERT_TOPIC_ARN', '')
 
-SERVICE_REFERENCE_URL = "https://servicereference.us-east-1.amazonaws.com/"
+SERVICE_REFERENCE_URL = "https://servicereference.eu-west-2.amazonaws.com/"
 SERVICE_NAME_PATTERN = re.compile(r'^[a-z0-9\-]+$')
 MAX_SERVICE_NAME_LENGTH = 30
 BASELINE_MARKER = "__baseline_initialized__"
@@ -681,7 +681,7 @@ Actions:
 5. Consider restoring from PITR if tampering confirmed
 6. Initiate incident response procedures
 
-Dashboard: https://console.aws.amazon.com/cloudwatch/home?region={os.environ.get('AWS_REGION', 'us-east-1')}#dashboards:name=aws-service-monitor
+Dashboard: https://console.aws.amazon.com/cloudwatch/home?region={os.environ.get('AWS_REGION', 'eu-west-2')}#dashboards:name=aws-service-monitor
 """
         )
         logger.info("Sent baseline integrity violation alert via SNS")

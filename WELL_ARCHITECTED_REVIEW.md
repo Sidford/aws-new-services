@@ -386,7 +386,7 @@ resource "aws_guardduty_detector" "main" {
 
 1. **Multi-Region Setup**
    ```
-   ✗ Single region deployment (us-east-1 only)
+   ✗ Single region deployment (eu-west-2 only)
    ✗ No failover capability
    ✗ No disaster recovery across regions
    ✗ Regional outage = total unavailability
@@ -801,7 +801,7 @@ aws ce get-cost-and-usage \
    ```
    ✗ No low-carbon region preference
    ✗ No renewable energy optimization
-   ✗ Fixed to us-east-1
+   ✗ Fixed to eu-west-2
    ```
 
 3. **Data Retention**

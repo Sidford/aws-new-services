@@ -7,7 +7,7 @@ Complete operational procedures and incident response runbooks for the AWS Servi
 ## Quick Links
 
 ### System Status
-- **CloudWatch Dashboard**: [AWS Service Monitor Dashboard](https://console.aws.amazon.com/cloudwatch/home?region=us-east-1#dashboards:name=aws-service-monitor)
+- **CloudWatch Dashboard**: [AWS Service Monitor Dashboard](https://console.aws.amazon.com/cloudwatch/home?region=eu-west-2#dashboards:name=aws-service-monitor)
 - **CloudWatch Logs**: [Lambda Logs](/aws/lambda/aws-service-monitor)
 - **SNS Topic**: For operational alerts and alarms
 

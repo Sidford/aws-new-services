@@ -34,7 +34,7 @@ aws cloudwatch get-metric-statistics \
   --end-time $(date -u +%Y-%m-%dT%H:%M:%S) \
   --period 300 \
   --statistics Average,Maximum \
-  --region us-east-1
+  --region eu-west-2
 ```
 
 **Key questions**:
@@ -49,7 +49,7 @@ aws cloudwatch get-metric-statistics \
 aws logs filter-log-events \
   --log-group-name /aws/lambda/aws-service-monitor \
   --filter-pattern "[duration]" \
-  --region us-east-1 \
+  --region eu-west-2 \
   --start-time $(date -d '24 hours ago' +%s)000 \
   --query 'events[].message' | jq -r '.[] | select(. | contains("execution"))'
 ```
@@ -67,7 +67,7 @@ aws logs filter-log-events \
 
 # Check if service reference endpoint is responding
 curl -w "Status: %{http_code}\nTime: %{time_total}s\n" \
-  https://servicereference.us-east-1.amazonaws.com/ -o /dev/null -s
+  https://servicereference.eu-west-2.amazonaws.com/ -o /dev/null -s
 
 # Should respond < 5 seconds
 ```
@@ -123,7 +123,7 @@ aws cloudwatch get-metric-statistics \
 **Verification**:
 ```bash
 # Time service fetch
-time curl -s https://servicereference.us-east-1.amazonaws.com/ | jq '.' > /dev/null
+time curl -s https://servicereference.eu-west-2.amazonaws.com/ | jq '.' > /dev/null
 ```
 
 **Solution**: This is AWS-side; increase Lambda timeout as temporary fix
@@ -224,7 +224,7 @@ If service count has grown significantly:
 aws lambda update-function-configuration \
   --function-name aws-service-monitor \
   --memory-size 1024 \
-  --region us-east-1
+  --region eu-west-2
 
 # 2. Wait for update to complete
 sleep 5
@@ -233,7 +233,7 @@ sleep 5
 aws lambda invoke \
   --function-name aws-service-monitor \
   --payload '{}' \
-  --region us-east-1 \
+  --region eu-west-2 \
   response.json
 
 # 4. Check duration in logs
@@ -323,7 +323,7 @@ aws cloudwatch get-metric-statistics \
 aws lambda update-function-configuration \
   --function-name aws-service-monitor \
   --memory-size 512 \
-  --region us-east-1
+  --region eu-west-2
 ```
 
 ---
