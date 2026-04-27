@@ -1,8 +1,73 @@
-# Architecture Overview
+# 🏗️ Architecture Overview
 
-This document provides detailed architecture diagrams and explanations for the AWS Service Monitor system.
+Comprehensive architecture documentation for the AWS Service Monitor system, including detailed diagrams and explanations.
+
+---
+
+## 📑 Contents
+
+1. [System Architecture](#system-architecture) - High-level system design
+2. [Data Flow Diagram](#data-flow-diagram) - Request/response sequences
+3. [Component Interactions](#component-interactions) - Service interactions
+4. [Infrastructure Stack](#infrastructure-stack) - Terraform resources
+5. [Request/Response Flow](#requestresponse-flow) - API-level details
+6. [AWS Services](#aws-services-interaction) - Service dependencies
+7. [Security Architecture](#security-architecture) - Security controls
+8. [Deployment](#deployment-architecture) - Deployment process
+9. [Scaling](#scaling-characteristics) - Performance & scaling
+10. [Costs](#cost-architecture) - Cost breakdown
+11. [Disaster Recovery](#disaster-recovery) - Backup & recovery
+
+---
 
 ## System Architecture
+
+**Overview**: Complete system architecture showing all AWS services and their relationships.
+
+```mermaid
+graph TB
+    subgraph "External Data Sources"
+        AWS["🌐 AWS Service Reference<br/>(servicereference.us-east-1.amazonaws.com)"]
+    end
+    
+    subgraph "AWS Management Account"
+        subgraph "Orchestration"
+            EB["📅 EventBridge<br/>Schedule Rule<br/>cron(0 8 * * ? *)"]
+        end
+        
+        subgraph "Compute & Logic"
+            Lambda["⚡ Lambda Function<br/>aws-service-monitor<br/>Python 3.11"]
+        end
+        
+        subgraph "Data Layer"
+            DB["💾 DynamoDB Table<br/>aws-service-monitor-registry<br/>PAY_PER_REQUEST<br/>+ Baseline Integrity"]
+            S3["📦 S3 Bucket<br/>Immutable Snapshots<br/>Object Lock (90d)"]
+        end
+        
+        subgraph "Policy Management"
+            ORG["🏢 AWS Organizations<br/>Service Control Policies<br/>blacklist SCP"]
+        end
+        
+        subgraph "Notification & Monitoring"
+            SES["📧 Amazon SES<br/>Email Service<br/>Verified Addresses"]
+            CW["📊 CloudWatch<br/>Logs & Metrics<br/>Dashboard & Alarms"]
+            SNS["📢 SNS Topic<br/>Alert Distribution"]
+        end
+    end
+    
+    subgraph "Recipients"
+        EMAIL["✉️ Email Recipients<br/>(verified in SES)"]
+    end
+    
+    AWS -->|"HTTPS GET<br/>Fetch JSON"| Lambda
+    EB -->|"Trigger<br/>Invoke"| Lambda
+    Lambda -->|"Read/Write<br/>Service Registry<br/>+ Baseline"| DB
+    Lambda -->|"Store<br/>Snapshots"| S3
+    Lambda -->|"Query & Update<br/>SCP Policy"| ORG
+    Lambda -->|"Send Email<br/>HTML + Text"| SES
+    Lambda -->|"Write Logs<br/>Put Metrics"| CW
+    SNS -->|"Alert Topic"| EMAIL
+    SES -->|"Email<br/>Notification"| EMAIL
 
 ```mermaid
 graph TB
@@ -49,7 +114,20 @@ graph TB
     SES -->|"Email Notification"| EMAIL
 ```
 
+**Key Components**:
+- **EventBridge**: Triggers Lambda on daily schedule (8 AM UTC)
+- **Lambda**: Orchestrates all operations (10-20s typical execution)
+- **DynamoDB**: Maintains service registry with baseline integrity checksums
+- **S3**: Stores immutable snapshots with Object Lock for forensics
+- **Organizations**: Manages SCP policy with new service additions
+- **SES/SNS**: Sends email notifications and alerts
+- **CloudWatch**: Logs all executions and publishes custom metrics
+
+---
+
 ## Data Flow Diagram
+
+**Execution Timeline**: Complete sequence of operations from trigger to completion.
 
 ```mermaid
 sequenceDiagram
@@ -99,7 +177,20 @@ sequenceDiagram
     deactivate Lambda
 ```
 
+**Flow Details**:
+1. EventBridge triggers Lambda function (scheduled)
+2. Lambda fetches current services from AWS service reference (HTTPS GET)
+3. Lambda scans DynamoDB for previously tracked services
+4. Compares current vs. tracked to identify new services
+5. **If new services**: Updates SCP policy, stores new entries, sends email notification
+6. **If no changes**: Logs result and exits
+7. Publishes execution metrics to CloudWatch
+
+---
+
 ## Component Interactions
+
+**Step-by-Step Logic**: Detailed view of Lambda function operations and their sequence.
 
 ```mermaid
 graph LR
@@ -138,7 +229,19 @@ graph LR
     EMAIL -->|"HTML + Text"| RECIPIENTS
 ```
 
+**Six-Step Process**:
+1. **Fetch**: Get current services from AWS
+2. **Compare**: Identify new services (set difference)
+3. **Update SCP**: Add new services to blacklist policy
+4. **Store**: Write new services to DynamoDB with timestamps
+5. **Notify**: Send HTML + Text email to recipients
+6. **Log**: Write execution details to CloudWatch
+
+---
+
 ## Infrastructure Stack
+
+**IaC Resources**: All AWS resources managed by Terraform.
 
 ```mermaid
 graph TD
@@ -189,7 +292,19 @@ graph TD
     PERM --> FUNC
 ```
 
+**Hierarchy**:
+- **IAM Layer**: Execution role with minimal required permissions
+- **Lambda Layer**: Function configuration, timeout, memory, runtime
+- **Data Layer**: DynamoDB table and CloudWatch log group
+- **Orchestration**: EventBridge rule and Lambda invocation permission
+
+All managed declaratively via Terraform for reproducibility.
+
+---
+
 ## Request/Response Flow
+
+**Detailed API Interactions**: Low-level view of all API calls made during execution.
 
 ```mermaid
 graph TD
@@ -241,7 +356,18 @@ graph TD
     SEND --> RESULT3
 ```
 
+**API Calls**:
+- **Service Reference**: GET / → JSON response with services
+- **DynamoDB**: Scan → Item[] → Extract service names
+- **Organizations**: ListPolicies → Find blacklist → DescribePolicy → UpdatePolicy
+- **SES**: SendEmail → MessageId response
+- **CloudWatch**: PutMetricData → Success response
+
+---
+
 ## AWS Services Interaction
+
+**Service Dependencies**: Which AWS services are used and why.
 
 ```mermaid
 graph LR
