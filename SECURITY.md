@@ -90,6 +90,7 @@ The solution uses AWS-managed services with proper IAM controls, but automated S
     "logs:CreateLogStream",
     "logs:PutLogEvents"
   ],
+<<<<<<< HEAD
   "Resource": "arn:aws:logs:eu-west-2:ACCOUNT:log-group:/aws/lambda/aws-service-monitor:*"
 }
 ```
@@ -420,7 +421,11 @@ import socket
 
 def validate_service_reference_domain():
     """Verify service reference domain."""
+<<<<<<< HEAD
     domain = "servicereference.eu-west-2.amazonaws.com"
+=======
+    domain = "servicereference.us-east-1.amazonaws.com"
+>>>>>>> origin/main
     
     try:
         ip = socket.gethostbyname(domain)
