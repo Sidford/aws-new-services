@@ -1,0 +1,18 @@
+# Development Branch
+
+This is the dev branch containing all AWS Service Monitor code and infrastructure.
+
+## Branch Information
+- Contains: Full application code, tests, documentation
+- Purpose: Development and staging work
+- Target for PRs: Pull requests from dev to main restore code
+
+## Files Included
+- Terraform infrastructure configuration
+- Lambda function with service monitoring logic
+- DynamoDB registry for state management
+- Comprehensive test suite (12 unit tests + integration tests)
+- Complete documentation
+
+To merge to main, create a PR from this branch.
+
