@@ -68,6 +68,7 @@ graph TB
     Lambda -->|"Write Logs<br/>Put Metrics"| CW
     SNS -->|"Alert Topic"| EMAIL
     SES -->|"Email<br/>Notification"| EMAIL
+```
 
 ```mermaid
 graph TB
