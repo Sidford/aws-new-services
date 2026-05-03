@@ -15,7 +15,7 @@ This document describes the threat model for the AWS Service Monitor solution. I
 | High | 8 |
 | Medium | 5 |
 | Low | 2 |
-| Mitigated | 12 |
+| Mitigated | 13 |
 | Accepted | 6 |
 
 ---
@@ -784,61 +784,25 @@ if service in approved_services:
 
 ### T016: GitHub Actions CI/CD Supply Chain Risk
 
-**Severity**: 🔴 HIGH | **Likelihood**: 🟡 MEDIUM | **Risk**: HIGH**
+**Severity**: 🔴 HIGH | **Likelihood**: 🟡 MEDIUM | **Risk**: LOW** ✅ MITIGATED
 
-**Description**: Two GitHub Actions workflows (`.github/workflows/claude.yml` and `.github/workflows/claude-code-review.yml`) introduce several supply-chain and token-exposure risks:
+**Description**: Two GitHub Actions workflows introduced supply-chain and token-exposure risks. All four sub-risks have been addressed.
 
-1. **Untriggered-actor invocation**: `claude.yml` fires on any `issue_comment` or `pull_request_review_comment` that mentions `@claude`. There is no allowlist of permitted actor logins. Any GitHub user — including anonymous public contributors on a public repo or any authenticated user on a private one — can trigger an AI agent execution against the repository.
+**Implemented Controls**:
+- ✅ **Actor allowlist**: `claude.yml` now gates on `github.actor == 'baldrickuk'` before evaluating any `@claude` mention — no external user can trigger the agent
+- ✅ **Pinned action SHAs**: Both workflows pin `actions/checkout` and `anthropics/claude-code-action` to immutable commit SHAs (not mutable `@v4`/`@v1` floating tags)
+  - `actions/checkout` → `34e114876b0b11c390a56381ad16ebd13914f8d5` (v4)
+  - `anthropics/claude-code-action` → `fefa07e9c665b7320f08c3b525980457f22f58aa` (v1)
+- ✅ **External plugin dependency removed**: `claude-code-review.yml` no longer uses `plugin_marketplaces` or `plugins`; code review is driven by an inline `prompt` with no external code fetched at runtime
+- ✅ **`id-token: write` removed**: Both workflows now only hold `contents: read`, `pull-requests: read`, `issues: read` (and `actions: read` for CI result access in `claude.yml`) — OIDC token issuance is no longer possible
 
-2. **OAuth token exposure**: Both workflows pass `secrets.CLAUDE_CODE_OAUTH_TOKEN` to `anthropics/claude-code-action@v1`. If the action is compromised (e.g. via a malicious tag update at `@v1`), it can exfiltrate the token, granting the attacker persistent Claude API access.
+**Residual Risk**: Low
 
-3. **Unpinned external action and plugin**: `claude-code-review.yml` loads `plugins: 'code-review@claude-code-plugins'` from `plugin_marketplaces: 'https://github.com/anthropics/claude-code.git'` at a mutable branch ref. A compromised or hijacked branch at that remote executes arbitrary code in the workflow runner.
+**Recommendation**: ✅ **MITIGATED**
 
-4. **`id-token: write` permission**: Both workflows grant `id-token: write`. If this repository's OIDC provider is configured to allow trust from GitHub Actions, a compromised runner can request AWS credentials and act with those permissions.
-
-**Impact**:
-- Unintended AI agent execution consuming paid API quota; potential prompt injection via crafted issue/PR comments
-- Token exfiltration granting attackers access to the Claude API under the project's account
-- Arbitrary code execution in the CI runner if a plugin source is compromised
-- AWS credential theft if OIDC trust relationship exists
-
-**Existing Controls**:
-- ✅ Workflows check for `@claude` mention (reduces accidental triggering)
-- ✅ `contents: read` limits direct repository write access from the workflow
-- ✅ `pull-requests: read` limits PR write access
-
-**Gaps**:
-- ❌ No `if: github.actor == '...'` allowlist restricting who can trigger the Claude workflow
-- ❌ Both workflows use `anthropics/claude-code-action@v1` (mutable floating tag, not a pinned SHA)
-- ❌ Plugin pulled from a mutable branch ref with no hash pinning
-- ❌ `id-token: write` granted even though no OIDC-based AWS role assumption is documented as required
-
-**Recommendation**: 🟡 **MITIGATE**
-
-**Suggested Mitigations**:
-```yaml
-# 1. Pin actions to immutable commit SHAs
-- uses: anthropics/claude-code-action@<full-commit-sha>   # e.g. @abc1234...
-
-# 2. Restrict who can trigger the Claude workflow
-jobs:
-  claude:
-    if: |
-      github.event.comment.user.login == 'allowed-user-1' ||
-      github.event.comment.user.login == 'allowed-user-2'
-
-# 3. Drop id-token: write if no OIDC/AWS role assumption is needed
-permissions:
-  contents: read
-  pull-requests: read
-  issues: read
-  # id-token: write  <-- remove unless OIDC AWS assumption is explicitly required
-
-# 4. Pin the plugin marketplace reference to a commit SHA in the plugin source
-#    or host the plugin in this repository to remove the external dependency
-```
-
-**Note on CLAUDE_CODE_OAUTH_TOKEN**: Rotate this secret immediately if any workflow run produced unexpected output or if the `claude-code-action` version was updated without a full diff review.
+**Remaining hardening (optional)**:
+- Re-pin SHA when upgrading to a newer version of `claude-code-action` — update the comment tag reference (`# v1`) at the same time so the intent stays readable
+- Rotate `CLAUDE_CODE_OAUTH_TOKEN` if any workflow run produced unexpected output before pinning was applied
 
 ---
 
@@ -909,8 +873,8 @@ Low            [T009]
 | Status | Count | Threats |
 |--------|-------|---------|
 | ✅ Accept | 6 | T001, T004, T006, T008, T009, T011 |
-| ✅ Mitigated | 1 | T003 |
-| 🟡 Mitigate | 10 | T002, T005, T007, T010, T012, T013, T014, T015, T016, T017 |
+| ✅ Mitigated | 2 | T003, T016 |
+| 🟡 Mitigate | 9 | T002, T005, T007, T010, T012, T013, T014, T015, T017 |
 
 ---
 
@@ -919,12 +883,12 @@ Low            [T009]
 ### Phase 1: Critical (Week 1)
 
 ```
-Priority 1: GitHub Actions Hardening (T016)
-├─ Pin anthropics/claude-code-action to a commit SHA
-├─ Add actor allowlist to claude.yml trigger condition
-├─ Remove id-token: write if AWS OIDC trust is not in use
-├─ Pin plugin marketplace source to a commit SHA or move in-repo
-└─ Estimated effort: 2 hours
+Priority 1: GitHub Actions Hardening (T016) ✅ DONE
+├─ ✅ Pinned actions/checkout and claude-code-action to immutable commit SHAs
+├─ ✅ Actor allowlist added (github.actor == 'baldrickuk')
+├─ ✅ id-token: write removed from both workflows
+├─ ✅ External plugin dependency removed; inline prompt used instead
+└─ Completed 2026-05-03
 
 Priority 2: Approved-Services Table Write Protection (T015)
 ├─ Split Lambda IAM policy: read-only on approved-services table
