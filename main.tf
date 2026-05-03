@@ -85,6 +85,35 @@ resource "aws_dynamodb_table" "service_registry" {
   tags = var.tags
 }
 
+# DynamoDB table for tracking approved services and approval requests
+resource "aws_dynamodb_table" "approved_services" {
+  name           = "aws-service-monitor-approved-services"
+  billing_mode   = "PAY_PER_REQUEST"
+  hash_key       = "service_name"
+
+  attribute {
+    name = "service_name"
+    type = "S"
+  }
+
+  attribute {
+    name = "approval_status"
+    type = "S"
+  }
+
+  global_secondary_index {
+    name            = "approval-status-index"
+    hash_key        = "approval_status"
+    projection_type = "ALL"
+  }
+
+  point_in_time_recovery {
+    enabled = true
+  }
+
+  tags = var.tags
+}
+
 # IAM role for Lambda function
 resource "aws_iam_role" "lambda_role" {
   name = "aws-service-monitor-lambda-role"
@@ -122,7 +151,11 @@ resource "aws_iam_role_policy" "lambda_dynamodb_policy" {
           "dynamodb:Query",
           "dynamodb:Scan"
         ]
-        Resource = aws_dynamodb_table.service_registry.arn
+        Resource = [
+          aws_dynamodb_table.service_registry.arn,
+          aws_dynamodb_table.approved_services.arn,
+          "${aws_dynamodb_table.approved_services.arn}/index/*"
+        ]
       }
     ]
   })
@@ -289,13 +322,17 @@ resource "aws_lambda_function" "service_monitor" {
 
   environment {
     variables = {
-      DYNAMODB_TABLE            = aws_dynamodb_table.service_registry.name
-      SCP_NAME                  = var.scp_name
-      EMAIL_RECIPIENTS          = jsonencode(var.email_recipients)
-      SENDER_EMAIL              = var.sender_email
-      REQUIRE_APPROVAL          = var.require_scp_approval ? "true" : "false"
-      BASELINE_SNAPSHOT_BUCKET  = aws_s3_bucket.baseline_snapshots.id
-      ALERT_TOPIC_ARN           = aws_sns_topic.alerts.arn
+      DYNAMODB_TABLE                   = aws_dynamodb_table.service_registry.name
+      APPROVED_SERVICES_TABLE          = aws_dynamodb_table.approved_services.name
+      SCP_NAME                         = var.scp_name
+      EMAIL_RECIPIENTS                 = jsonencode(var.email_recipients)
+      SENDER_EMAIL                     = var.sender_email
+      REQUIRE_APPROVAL                 = var.require_scp_approval ? "true" : "false"
+      BASELINE_SNAPSHOT_BUCKET         = aws_s3_bucket.baseline_snapshots.id
+      ALERT_TOPIC_ARN                  = aws_sns_topic.alerts.arn
+      ENABLE_SERVICE_APPROVAL_WORKFLOW = var.enable_service_approval_workflow ? "true" : "false"
+      APPROVED_SERVICES_LIST           = jsonencode(var.approved_services)
+      APPROVAL_RECIPIENTS              = jsonencode(length(var.approval_recipients) > 0 ? var.approval_recipients : var.email_recipients)
     }
   }
 

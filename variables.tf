@@ -44,6 +44,24 @@ variable "require_scp_approval" {
   default     = true
 }
 
+variable "approved_services" {
+  description = "List of services that are approved for use (excluded from SCP deny list)"
+  type        = list(string)
+  default     = []
+}
+
+variable "enable_service_approval_workflow" {
+  description = "Enable manual approval workflow for services moving from blacklist to approved list"
+  type        = bool
+  default     = true
+}
+
+variable "approval_recipients" {
+  description = "Email addresses that receive approval requests for blacklisted services"
+  type        = list(string)
+  default     = []
+}
+
 variable "tags" {
   description = "Common tags for all resources"
   type        = map(string)

@@ -61,6 +61,23 @@ require_scp_approval = true
 # Perfect for: testing, audit, manual SCP management
 
 # ============================================================================
+# SERVICE APPROVAL & ALLOWLIST
+# ============================================================================
+# Enable approval workflow — sends approval request emails when new services are detected
+enable_service_approval_workflow = true
+
+# Pre-approved services (excluded from SCP deny list)
+approved_services = [
+  # "example-service-1",
+  # "example-service-2"
+]
+
+# Email addresses to receive approval requests (defaults to email_recipients if empty)
+approval_recipients = [
+  # "approval-team@example.com"
+]
+
+# ============================================================================
 # OPTIONAL CONFIGURATION
 # ============================================================================
 # Add custom tags to all resources
