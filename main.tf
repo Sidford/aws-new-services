@@ -1,3 +1,44 @@
+# KMS key for DynamoDB encryption (T003 mitigation)
+resource "aws_kms_key" "dynamodb" {
+  description             = "CMK for aws-service-monitor DynamoDB tables"
+  enable_key_rotation     = true
+  deletion_window_in_days = 14
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Sid    = "AllowAccountAdmin"
+        Effect = "Allow"
+        Principal = {
+          AWS = "arn:aws:iam::${data.aws_caller_identity.current.account_id}:root"
+        }
+        Action   = "kms:*"
+        Resource = "*"
+      },
+      {
+        Sid    = "AllowLambdaEncryptDecrypt"
+        Effect = "Allow"
+        Principal = {
+          AWS = aws_iam_role.lambda_role.arn
+        }
+        Action = [
+          "kms:GenerateDataKey",
+          "kms:Decrypt"
+        ]
+        Resource = "*"
+      }
+    ]
+  })
+
+  tags = var.tags
+}
+
+resource "aws_kms_alias" "dynamodb" {
+  name          = "alias/aws-service-monitor-dynamodb"
+  target_key_id = aws_kms_key.dynamodb.key_id
+}
+
 # S3 bucket for immutable baseline snapshots (T004 mitigation)
 resource "aws_s3_bucket" "baseline_snapshots" {
   bucket = "service-monitor-baseline-${data.aws_caller_identity.current.account_id}-${var.aws_region}"
@@ -77,6 +118,11 @@ resource "aws_dynamodb_table" "service_registry" {
     enabled = true
   }
 
+  server_side_encryption {
+    enabled     = true
+    kms_key_arn = aws_kms_key.dynamodb.arn
+  }
+
   ttl {
     attribute_name = "expiration_time"
     enabled        = false
@@ -109,6 +155,11 @@ resource "aws_dynamodb_table" "approved_services" {
 
   point_in_time_recovery {
     enabled = true
+  }
+
+  server_side_encryption {
+    enabled     = true
+    kms_key_arn = aws_kms_key.dynamodb.arn
   }
 
   tags = var.tags
@@ -283,6 +334,26 @@ resource "aws_iam_role_policy" "lambda_logs_policy" {
           "logs:PutLogEvents"
         ]
         Resource = "${aws_cloudwatch_log_group.lambda_logs.arn}:*"
+      }
+    ]
+  })
+}
+
+# IAM policy for Lambda to use the DynamoDB KMS key (T003 mitigation)
+resource "aws_iam_role_policy" "lambda_kms_policy" {
+  name = "lambda-kms-dynamodb-policy"
+  role = aws_iam_role.lambda_role.id
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Effect = "Allow"
+        Action = [
+          "kms:GenerateDataKey",
+          "kms:Decrypt"
+        ]
+        Resource = aws_kms_key.dynamodb.arn
       }
     ]
   })

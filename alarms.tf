@@ -144,6 +144,29 @@ resource "aws_cloudwatch_metric_alarm" "missed_execution" {
   tags = var.tags
 }
 
+# DynamoDB Unusual Write Volume - T003 mitigation
+# The Lambda writes once per day; sustained high write volume outside that window
+# indicates unauthorized direct table access.
+resource "aws_cloudwatch_metric_alarm" "dynamodb_unusual_writes" {
+  alarm_name          = "service-monitor-dynamodb-unusual-writes"
+  comparison_operator = "GreaterThanThreshold"
+  evaluation_periods  = "1"
+  metric_name         = "ConsumedWriteCapacityUnits"
+  namespace           = "AWS/DynamoDB"
+  period              = "3600"
+  statistic           = "Sum"
+  threshold           = "500"
+  alarm_description   = "Unusually high DynamoDB write volume — possible unauthorized direct table access (T003)"
+  alarm_actions       = [aws_sns_topic.alerts.arn]
+  treat_missing_data  = "notBreaching"
+
+  dimensions = {
+    TableName = aws_dynamodb_table.service_registry.name
+  }
+
+  tags = var.tags
+}
+
 # EventBridge Rule State - CRITICAL
 resource "aws_cloudwatch_metric_alarm" "eventbridge_rule_disabled" {
   alarm_name          = "service-monitor-eventbridge-rule-disabled"

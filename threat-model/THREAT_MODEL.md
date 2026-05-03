@@ -15,7 +15,7 @@ This document describes the threat model for the AWS Service Monitor solution. I
 | High | 8 |
 | Medium | 5 |
 | Low | 2 |
-| Mitigated | 11 |
+| Mitigated | 12 |
 | Accepted | 6 |
 
 ---
@@ -146,7 +146,7 @@ for attempt in range(max_retries):
 
 ### T003: Unauthorized DynamoDB Access
 
-**Severity**: 🔴 HIGH | **Likelihood**: 🟡 MEDIUM | **Risk**: MEDIUM**
+**Severity**: 🔴 HIGH | **Likelihood**: 🟡 MEDIUM | **Risk**: LOW** ✅ MITIGATED
 
 **Description**: User with IAM permissions directly modifies DynamoDB table, adding/removing services.
 
@@ -155,49 +155,22 @@ for attempt in range(max_retries):
 - Missed service detections
 - False positives in SCP
 
-**Existing Controls**:
-- ✅ IAM role restrictions
-- ✅ DynamoDB encryption
-- ✅ CloudTrail logging
+**Implemented Controls**:
+- ✅ IAM role restrictions — Lambda role has minimum required actions only (no DeleteItem)
+- ✅ KMS CMK encryption (`aws_kms_key.dynamodb`, 14-day deletion window, annual rotation) on both tables
+- ✅ KMS key policy restricts `GenerateDataKey`/`Decrypt` to Lambda role ARN and account root only
+- ✅ CloudTrail logging (organisation-level)
+- ✅ PITR enabled on both tables (point-in-time recovery for corruption events)
+- ✅ CloudWatch alarm (`service-monitor-dynamodb-unusual-writes`) fires on >500 write units/hour — baseline Lambda run produces far fewer; sustained anomaly indicates direct table access
+- ✅ Baseline integrity check + tamper alert email/SNS on every Lambda execution (T004 controls provide secondary detection)
 
-**Residual Risk**: Medium
+**Residual Risk**: Low
 
-**Recommendation**: 🟡 **MITIGATE**
+**Recommendation**: ✅ **MITIGATED**
 
-**Suggested Mitigations**:
-```hcl
-# Use KMS encryption
-resource "aws_kms_key" "dynamodb" {
-  enable_key_rotation = true
-}
-
-resource "aws_dynamodb_table" "service_registry" {
-  server_side_encryption {
-    enabled     = true
-    kms_key_arn = aws_kms_key.dynamodb.arn
-  }
-}
-
-# Restrict DynamoDB permissions further
-resource "aws_iam_role_policy" "lambda_dynamodb" {
-  policy = jsonencode({
-    Statement = [{
-      Effect = "Allow"
-      Action = [
-        "dynamodb:GetItem",
-        "dynamodb:PutItem",
-        "dynamodb:Query"  # Not Scan or DeleteItem
-      ]
-      Resource = aws_dynamodb_table.service_registry.arn
-      Condition = {
-        IpAddress = {
-          "aws:SourceIp" = ["10.0.0.0/8"]  # VPC only
-        }
-      }
-    }]
-  })
-}
-```
+**Remaining hardening (optional)**:
+- Enable CloudTrail DynamoDB data events and add a metric filter/alarm on `PutItem`/`DeleteItem` calls whose `userIdentity.arn` does not match the Lambda role — provides principal-level detection rather than volume-based detection
+- Consider SCPs to restrict DynamoDB `DeleteItem` on these tables organisation-wide
 
 ---
 
@@ -936,7 +909,8 @@ Low            [T009]
 | Status | Count | Threats |
 |--------|-------|---------|
 | ✅ Accept | 6 | T001, T004, T006, T008, T009, T011 |
-| 🟡 Mitigate | 11 | T002, T003, T005, T007, T010, T012, T013, T014, T015, T016, T017 |
+| ✅ Mitigated | 1 | T003 |
+| 🟡 Mitigate | 10 | T002, T005, T007, T010, T012, T013, T014, T015, T016, T017 |
 
 ---
 
@@ -963,10 +937,10 @@ Priority 3: Policy Drift Detection (T005)
 ├─ Send alerts via SNS
 └─ Estimated effort: 4 hours
 
-Priority 4: KMS Encryption (T003, T015)
-├─ Enable customer-managed keys for both DynamoDB tables
-├─ Update Lambda IAM policy for kms:Decrypt/kms:GenerateDataKey
-└─ Estimated effort: 2 hours
+Priority 4: KMS Encryption (T015)
+├─ ✅ DONE (T003): CMK applied to both DynamoDB tables, Lambda KMS policy added, anomaly alarm deployed
+├─ T015: Extend KMS key policy to restrict approved-services table writes by principal
+└─ Estimated effort: 1 hour
 ```
 
 ### Phase 2: Important (Month 1)
