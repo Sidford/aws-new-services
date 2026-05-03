@@ -350,6 +350,30 @@ def store_new_services(services: List[str]) -> None:
         print(f"Error storing services: {str(e)}")
 
 
+def update_baseline_checksum(all_services: Set[str]) -> bool:
+    """Update the baseline checksum after new services are added."""
+    try:
+        table = dynamodb.Table(DYNAMODB_TABLE)
+        new_checksum = calculate_baseline_checksum(all_services)
+
+        table.update_item(
+            Key={'service_name': BASELINE_MARKER},
+            UpdateExpression='SET checksum = :checksum, last_updated = :ts, service_count = :count',
+            ExpressionAttributeValues={
+                ':checksum': new_checksum,
+                ':ts': datetime.utcnow().isoformat(),
+                ':count': len(all_services)
+            }
+        )
+
+        logger.info(f"Updated baseline checksum to {new_checksum[:16]}... ({len(all_services)} services)")
+        return True
+
+    except Exception as e:
+        logger.error(f"Error updating baseline checksum: {str(e)}")
+        return False
+
+
 def get_scp_policy() -> Dict:
     """Get the blacklist SCP policy."""
     try:
@@ -951,8 +975,9 @@ def lambda_handler(event, context):
 
             new_services_list = sorted(list(valid_services))
 
-            # Store new services in DynamoDB
+            # Store new services in DynamoDB and update checksum to prevent false tamper alerts
             store_new_services(new_services_list)
+            update_baseline_checksum(tracked_services | set(new_services_list))
 
             # Get SCP policy
             scp_policy = get_scp_policy()
