@@ -24,6 +24,7 @@ SCP_NAME = os.environ['SCP_NAME']
 EMAIL_RECIPIENTS = json.loads(os.environ['EMAIL_RECIPIENTS'])
 SENDER_EMAIL = os.environ['SENDER_EMAIL']
 REQUIRE_APPROVAL = os.environ.get('REQUIRE_APPROVAL', 'true').lower() == 'true'
+MANAGE_SCP_POLICY = os.environ.get('MANAGE_SCP_POLICY', 'true').lower() == 'true'
 BASELINE_SNAPSHOT_BUCKET = os.environ.get('BASELINE_SNAPSHOT_BUCKET', '')
 ALERT_TOPIC_ARN = os.environ.get('ALERT_TOPIC_ARN', '')
 APPROVED_SERVICES_TABLE = os.environ.get('APPROVED_SERVICES_TABLE', '')

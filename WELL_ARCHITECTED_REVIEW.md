@@ -8,17 +8,17 @@ Comprehensive assessment of the AWS Service Monitor solution against all six pil
 
 | Pillar | Score | Status | Comment |
 |--------|-------|--------|---------|
-| **Operational Excellence** | 7/10 | 🟡 Good | Good logging, needs runbooks & dashboards |
-| **Security** | 9/10 | 🟢 Excellent | Baseline integrity verification, strong IAM & validation |
-| **Reliability** | 7/10 | 🟡 Good | PITR enabled, needs multi-region & alerts |
-| **Performance Efficiency** | 8/10 | 🟢 Strong | Well-tuned Lambda, DynamoDB on-demand |
-| **Cost Optimization** | 9/10 | 🟢 Excellent | Minimal services, pay-per-request model |
-| **Sustainability** | 6/10 | 🟡 Fair | Serverless is efficient, but could optimize further |
+| **Operational Excellence** | 8/10 | 🟢 Strong | CI/CD via GitHub Actions; approval workflow adds human oversight |
+| **Security** | 9/10 | 🟢 Excellent | Approval allowlist; checksum fix closes tamper-detection gap |
+| **Reliability** | 8/10 | 🟢 Strong | Both DynamoDB tables have PITR; approval workflow reduces false positives |
+| **Performance Efficiency** | 7/10 | 🟡 Good | Additional DynamoDB queries for approval lookup add latency |
+| **Cost Optimization** | 8/10 | 🟢 Strong | Second DynamoDB table adds marginal cost; still very low overall |
+| **Sustainability** | 6/10 | 🟡 Fair | Serverless is efficient; no major changes |
 | **OVERALL** | **8/10** | 🟢 **EXCELLENT** | **Production-ready with strong security posture** |
 
 ---
 
-## Pillar 1: Operational Excellence ⭐ 7/10
+## Pillar 1: Operational Excellence ⭐ 8/10
 
 **Focus**: Run and monitor systems to deliver business value and continuously improve
 
@@ -48,6 +48,7 @@ Comprehensive assessment of the AWS Service Monitor solution against all six pil
    ✓ DEVELOPMENT.md - Customization guide
    ✓ SECURITY.md - Security controls
    ✓ ARCHITECTURE.md - Diagrams & design
+   ✓ runbooks/ - Operational procedures (SCP rollback, DynamoDB recovery, Lambda timeout)
    ```
 
 4. **Error Handling**
@@ -66,6 +67,24 @@ Comprehensive assessment of the AWS Service Monitor solution against all six pil
    ✓ Approval workflows (manual trigger option)
    ```
 
+6. **CI/CD Pipeline** ✅ [NEW]
+   ```
+   ✓ GitHub Actions workflows using anthropics/claude-code-action@v1
+   ✓ Automated code review on every pull request (claude-code-review.yml)
+   ✓ On-demand Claude assistance via @claude mentions in issues and PRs (claude.yml)
+   ✓ CI results surfaced directly in PRs for fast feedback loops
+   ✓ Reduces manual review burden; flags issues before merge
+   ```
+
+7. **Service Approval Workflow** ✅ [NEW]
+   ```
+   ✓ Human oversight gate before new services affect the SCP deny list
+   ✓ Approval request emails sent to configurable approval_recipients list
+   ✓ Pending approvals tracked in DynamoDB for audit trail
+   ✓ Operators can approve via terraform.tfvars without code changes
+   ✓ Reduces toil from spurious SCP additions
+   ```
+
 ### ⚠️ Gaps
 
 1. **No Operational Dashboards**
@@ -79,31 +98,29 @@ Comprehensive assessment of the AWS Service Monitor solution against all six pil
 2. **Limited Alerting**
    ```
    ✗ No CloudWatch Alarms configured
-   ✗ No SNS notifications for errors
    ✗ No alert on high Lambda error rate
    ✗ No alert on missed executions
    ```
 
-3. **No Runbooks**
-   ```
-   ✗ No operational runbooks
-   ✗ No troubleshooting guides
-   ✗ No incident response procedures
-   ✗ No escalation paths
-   ```
-
-4. **No Performance Tuning Guidelines**
+3. **No Performance Tuning Guidelines**
    ```
    ✗ No guidance on Lambda memory sizing
    ✗ No guidance on DynamoDB scaling
    ✗ No performance benchmarks
    ```
 
-5. **No Change Management**
+4. **No Change Management**
    ```
    ✗ No change log
    ✗ No deployment tracking
    ✗ No rollback procedures documented
+   ```
+
+5. **Approval Workflow UX**
+   ```
+   ✗ No self-service approval UI (approval requires terraform.tfvars edit + apply)
+   ✗ No approval expiry / timeout handling
+   ✗ No automatic reminder emails for pending approvals
    ```
 
 ### 🔧 Recommendations
@@ -147,16 +164,15 @@ resource "aws_cloudwatch_metric_alarm" "lambda_errors" {
 
 **Priority 3 (Medium)**:
 ```markdown
-# Create operational runbooks
-- Runbook: Lambda timeout recovery
-- Runbook: Baseline reset procedure
-- Runbook: SCP policy rollback
-- Runbook: DynamoDB table recovery
+# Improve approval workflow ergonomics
+- Add approval expiry (e.g., auto-escalate after 7 days with no decision)
+- Consider a lightweight approval API (API Gateway + Lambda) to replace
+  the terraform.tfvars edit workflow, enabling one-click approval from email
 ```
 
 ---
 
-## Pillar 2: Security ⭐ 8/10
+## Pillar 2: Security ⭐ 9/10
 
 **Focus**: Protect information, systems, and assets
 
@@ -165,7 +181,7 @@ resource "aws_cloudwatch_metric_alarm" "lambda_errors" {
 1. **Identity and Access Management**
    ```
    ✓ IAM role with least privilege
-   ✓ Scoped DynamoDB access
+   ✓ Scoped DynamoDB access (covers both tables and the GSI)
    ✓ Scoped CloudWatch Logs access
    ✓ Resource-specific permissions
    ✓ Service principal authentication
@@ -188,12 +204,13 @@ resource "aws_cloudwatch_metric_alarm" "lambda_errors" {
    ✓ SCP policy syntax validation
    ✓ Email address validation (via SES)
    ✓ JSON schema validation
+   ✓ HTML output escaped via html.escape() in approval emails
    ```
 
 4. **Application Security**
    ```
    ✓ Conditional writes prevent race conditions
-   ✓ Approval workflow for policy changes
+   ✓ Approval workflow for SCP policy changes
    ✓ Service reference fetch with SSL validation
    ✓ No SQL injection possible (DynamoDB)
    ✓ No command injection possible
@@ -202,10 +219,11 @@ resource "aws_cloudwatch_metric_alarm" "lambda_errors" {
 5. **Compliance & Audit**
    ```
    ✓ CloudTrail logging of all API calls
-   ✓ DynamoDB point-in-time recovery
+   ✓ DynamoDB point-in-time recovery (service registry)
+   ✓ DynamoDB point-in-time recovery (approved services table) ✅ NEW
    ✓ Service registry immutable records
    ✓ Baseline initialization tracking
-   ✓ Approval audit trail
+   ✓ Approval audit trail in DynamoDB (pending / approved status) ✅ NEW
    ```
 
 6. **Secret Management**
@@ -221,16 +239,34 @@ resource "aws_cloudwatch_metric_alarm" "lambda_errors" {
    ✓ SHA256 checksum verification of baseline services
    ✓ Detects unauthorized DynamoDB modifications
    ✓ S3 immutable snapshots with Object Lock (90-day retention)
-   ✓ Automatic tamper alerts via email
+   ✓ Automatic tamper alerts via email and SNS
    ✓ Forensic evidence preservation and recovery capability
    ✓ Two-layer protection against baseline reinitialization attacks
+   ```
+
+8. **Checksum Consistency Fix** ✅ [NEW]
+   ```
+   ✓ update_baseline_checksum() called immediately after store_new_services()
+   ✓ Closes the window where legitimate service additions would trigger
+     false tamper alerts on the next execution
+   ✓ Prevents operational disruption caused by benign checksum drift
+   ```
+
+9. **Service Approval Allowlist** ✅ [NEW]
+   ```
+   ✓ Approved services are tracked in DynamoDB but excluded from the SCP deny list
+   ✓ Approval decisions are an explicit, auditable human action
+   ✓ Per-service approval emails sent to configurable approval_recipients list
+   ✓ Two sources of truth: terraform.tfvars (static) + DynamoDB table (dynamic)
+   ✓ DynamoDB GSI on approval_status enables efficient policy-based queries
+   ✓ Lambda IAM policy explicitly grants access to the GSI endpoint
    ```
 
 ### ⚠️ Gaps
 
 1. **Encryption Key Management**
    ```
-   ✗ DynamoDB uses AWS managed keys (not KMS)
+   ✗ DynamoDB uses AWS managed keys (not KMS) — applies to both tables
    ✗ No customer-managed encryption keys
    ✗ No key rotation control
    ✗ No key access audit trail
@@ -262,11 +298,12 @@ resource "aws_cloudwatch_metric_alarm" "lambda_errors" {
    ✗ No threat detection
    ```
 
-5. **Data Residency**
+5. **Approval Workflow Integrity**
    ```
-   ✗ No data residency controls
-   ✗ Always US-EAST-1
-   ✗ No compliance with regional data laws
+   ✗ Approval status in DynamoDB could theoretically be modified directly
+     (though this would require IAM permissions the Lambda role already has)
+   ✗ No separate IAM principal with read-only approval access
+   ✗ No approval expiry — pending items accumulate indefinitely
    ```
 
 ### 🔧 Recommendations
@@ -289,14 +326,14 @@ resource "aws_secretsmanager_secret_version" "email_config" {
 
 **Priority 2 (Medium)**:
 ```hcl
-# Use KMS for DynamoDB encryption
+# Use KMS for DynamoDB encryption (both tables)
 resource "aws_kms_key" "dynamodb" {
   description             = "KMS key for DynamoDB encryption"
   enable_key_rotation     = true
   deletion_window_in_days = 7
 }
 
-resource "aws_dynamodb_table" "service_registry" {
+resource "aws_dynamodb_table" "approved_services" {
   # ... existing config ...
   server_side_encryption {
     enabled     = true
@@ -314,7 +351,7 @@ resource "aws_securityhub_account" "main" {
 
 resource "aws_guardduty_detector" "main" {
   enable = true
-  
+
   datasources {
     s3_logs {
       enable = true
@@ -325,13 +362,14 @@ resource "aws_guardduty_detector" "main" {
 
 **Implementation Status**: ✅ Baseline integrity verification (T004) is now fully implemented with:
 - SHA256 checksum validation on every execution
+- Checksum updated after legitimate service additions (eliminates false tamper alerts)
 - S3 immutable snapshots with Object Lock
-- Automatic tamper detection and alerting
+- Automatic tamper detection and alerting (email + SNS)
 - See [T004_IMPLEMENTATION.md](../threat-model/T004_IMPLEMENTATION.md) for details
 
 ---
 
-## Pillar 3: Reliability ⭐ 7/10
+## Pillar 3: Reliability ⭐ 8/10
 
 **Focus**: Ensure workloads perform intended functions and recover from failures
 
@@ -344,11 +382,13 @@ resource "aws_guardduty_detector" "main" {
    ✓ SCP update failures reported but don't cascade
    ✓ Email send failures logged but don't block
    ✓ Partial failure handling (some services fail but others succeed)
+   ✓ Approval table query failure degrades gracefully (returns pre-configured list)
    ```
 
 2. **Data Persistence**
    ```
-   ✓ DynamoDB point-in-time recovery (35 days)
+   ✓ DynamoDB point-in-time recovery on service registry (35 days)
+   ✓ DynamoDB point-in-time recovery on approved services table (35 days) ✅ NEW
    ✓ Service registry stored persistently
    ✓ Baseline marked and versioned
    ✓ Audit trail maintained
@@ -375,11 +415,21 @@ resource "aws_guardduty_detector" "main" {
 
 5. **Backup & Recovery**
    ```
-   ✓ DynamoDB PITR enabled
+   ✓ DynamoDB PITR enabled on both tables
    ✓ Service registry recoverable
+   ✓ Approved services recoverable independently of service registry
    ✓ Baseline recoverable
    ✓ 35-day recovery window
    ✓ Point-in-time restore capability
+   ```
+
+6. **Reduced False Positives** ✅ [NEW]
+   ```
+   ✓ update_baseline_checksum() prevents spurious integrity violations
+     after legitimate service additions
+   ✓ Approval workflow prevents legitimate new services from generating
+     unnecessary SCP changes that must be rolled back
+   ✓ Approved services excluded from SCP deny list automatically
    ```
 
 ### ⚠️ Gaps
@@ -403,7 +453,6 @@ resource "aws_guardduty_detector" "main" {
 3. **Alerting & Monitoring**
    ```
    ✗ No CloudWatch Alarms for failures
-   ✗ No SNS notifications on errors
    ✗ No Dashboard for health status
    ✗ No health check endpoint
    ✗ No synthetic monitoring
@@ -424,6 +473,14 @@ resource "aws_guardduty_detector" "main" {
    ✗ No request throttling
    ✗ No rate limiting
    ✗ No fallback mechanisms
+   ```
+
+6. **Approval Table Resilience**
+   ```
+   ✗ If the approved services table is unavailable, Lambda falls back to
+     the static APPROVED_SERVICES_LIST only — unapproved new services will
+     still trigger SCP additions, which is the safe-fail direction but may
+     cause unexpected SCP changes during a table outage
    ```
 
 ### 🔧 Recommendations
@@ -452,7 +509,7 @@ resource "aws_cloudwatch_metric_alarm" "dynamodb_throttle" {
 # Add Dead Letter Queue for failed invocations
 resource "aws_sqs_queue" "lambda_dlq" {
   name = "service-monitor-dlq"
-  
+
   message_retention_seconds = 1209600  # 14 days
 }
 
@@ -471,14 +528,15 @@ resource "aws_lambda_function" "service_monitor" {
 - RPO (Recovery Point Objective): 1 day
 
 # Document recovery procedures
-- DynamoDB table restore from PITR
+- DynamoDB table restore from PITR (both tables)
 - Lambda function redeploy from Git
 - EventBridge rule recreation
+- Approved services table restore procedure
 ```
 
 ---
 
-## Pillar 4: Performance Efficiency ⭐ 8/10
+## Pillar 4: Performance Efficiency ⭐ 7/10
 
 **Focus**: Use computing resources efficiently and maintain performance
 
@@ -509,6 +567,7 @@ resource "aws_lambda_function" "service_monitor" {
    ✓ Batch writes (batch_writer API)
    ✓ Efficient queries
    ✓ Projection expressions (limit returned data)
+   ✓ GSI on approval_status enables efficient status queries ✅ NEW
    ```
 
 4. **Network Efficiency**
@@ -530,15 +589,25 @@ resource "aws_lambda_function" "service_monitor" {
 
 ### ⚠️ Gaps
 
-1. **Caching**
+1. **Additional DynamoDB Queries (Approval Workflow)** [NEW]
+   ```
+   ⚠ get_approved_services() adds a DynamoDB Query call on every execution
+     that detects new services (one Query against the GSI)
+   ⚠ track_service_for_approval() adds one PutItem per unapproved service
+   ⚠ send_approval_request_email() adds one SES send per unapproved service
+   ⚠ Acceptable for daily/low-frequency use but adds 50-200ms latency per call
+   ```
+
+2. **Caching**
    ```
    ✗ No Lambda layer caching
    ✗ No service list caching
    ✗ No policy document caching
    ✗ No request memoization
+   ✗ Approved services list re-fetched on every invocation
    ```
 
-2. **Lambda Configuration**
+3. **Lambda Configuration**
    ```
    ✗ No memory scaling based on load
    ✗ No Provisioned Concurrency (for consistent latency)
@@ -546,22 +615,21 @@ resource "aws_lambda_function" "service_monitor" {
    ✗ No code minification
    ```
 
-3. **DynamoDB**
+4. **DynamoDB**
    ```
-   ✗ No indexes (using Scan instead of Query for some operations)
-   ✗ No projection expressions to reduce data
-   ✗ No caching strategy
+   ✗ Service registry still uses Scan for some operations (no GSI for is_baseline)
    ✗ No TTL on old entries
+   ✗ No caching strategy for approved services
    ```
 
-4. **API Performance**
+5. **API Performance**
    ```
    ✗ No request batching for Organizations API
    ✗ No pagination optimization
    ✗ No rate limiting handling
    ```
 
-5. **Monitoring**
+6. **Monitoring**
    ```
    ✗ No performance metrics dashboard
    ✗ No latency tracking
@@ -572,11 +640,26 @@ resource "aws_lambda_function" "service_monitor" {
 ### 🔧 Recommendations
 
 **Priority 1 (High)**:
+```python
+# Cache approved services in Lambda execution context
+# (valid across warm invocations within the same day)
+_approved_services_cache = None
+
+def get_approved_services() -> Set[str]:
+    global _approved_services_cache
+    if _approved_services_cache is not None:
+        return _approved_services_cache
+    # ... existing fetch logic ...
+    _approved_services_cache = approved
+    return approved
+```
+
+**Priority 2 (Medium)**:
 ```hcl
-# Add DynamoDB Global Secondary Index
+# Add DynamoDB Global Secondary Index for baseline queries
 resource "aws_dynamodb_table" "service_registry" {
   # ... existing config ...
-  
+
   global_secondary_index {
     name            = "is_baseline-index"
     hash_key        = "is_baseline"
@@ -586,7 +669,7 @@ resource "aws_dynamodb_table" "service_registry" {
 }
 ```
 
-**Priority 2 (Medium)**:
+**Priority 3 (Medium)**:
 ```python
 # Add CloudWatch Logs Insights queries for performance
 # Query execution time distribution
@@ -596,29 +679,9 @@ fields @duration | stats avg(@duration), max(@duration), pct(@duration, 95)
 fields @duration | filter @message like /DynamoDB/ | stats count()
 ```
 
-**Priority 3 (Medium)**:
-```python
-# Add TTL for old service entries
-def store_new_services(services: List[str]) -> None:
-    """Store new services with optional TTL."""
-    table = dynamodb.Table(DYNAMODB_TABLE)
-    timestamp = datetime.utcnow().isoformat()
-    
-    # TTL: 5 years (if no longer referenced)
-    ttl_timestamp = int((datetime.utcnow() + timedelta(days=1825)).timestamp())
-    
-    with table.batch_writer(batch_size=25) as batch:
-        for service in services:
-            batch.put_item(Item={
-                'service_name': service,
-                'first_seen': timestamp,
-                'ttl': ttl_timestamp  # Automatic cleanup after 5 years
-            })
-```
-
 ---
 
-## Pillar 5: Cost Optimization ⭐ 9/10
+## Pillar 5: Cost Optimization ⭐ 8/10
 
 **Focus**: Run systems to deliver business value at lowest price point
 
@@ -627,9 +690,9 @@ def store_new_services(services: List[str]) -> None:
 1. **Appropriate Pricing Models**
    ```
    ✓ Lambda: Pay-per-invocation (~$0.20/month)
-   ✓ DynamoDB: On-demand billing (~$1.00/month)
+   ✓ DynamoDB: On-demand billing on both tables (~$1.00-2.00/month combined)
    ✓ EventBridge: Free (no charge for triggers)
-   ✓ SES: Pay-per-email (~$0.10/month)
+   ✓ SES: Pay-per-email (~$0.10/month; approval emails add marginal cost)
    ✓ CloudWatch: Free tier covers usage
    ✓ Organizations: API included
    ```
@@ -664,14 +727,23 @@ def store_new_services(services: List[str]) -> None:
 5. **Cost Tracking**
    ```
    ✓ Predictable costs (fixed schedule)
-   ✓ Easy to estimate ($2/month baseline)
+   ✓ Easy to estimate (~$2-3/month baseline with new table)
    ✓ Cost per service tiny
    ✓ No surprise charges
    ```
 
 ### ⚠️ Gaps
 
-1. **Cost Monitoring**
+1. **Second DynamoDB Table Cost** [NEW]
+   ```
+   ⚠ aws-service-monitor-approved-services adds a second on-demand table
+   ⚠ Marginal additional cost (~$0.25/month); PITR on both tables adds
+     ~$0.20/GB/month (negligible at current data volume)
+   ⚠ Approval request emails via SES add per-email cost for each unapproved
+     new service; low frequency so impact is minimal
+   ```
+
+2. **Cost Monitoring**
    ```
    ✗ No AWS Cost Explorer integration
    ✗ No budget alerts
@@ -680,26 +752,19 @@ def store_new_services(services: List[str]) -> None:
    ✗ No cost allocation tags
    ```
 
-2. **Reserved Capacity**
+3. **Reserved Capacity**
    ```
    ✗ Not using Reserved Capacity (Lambda)
    ✗ Not using Savings Plans
    ✗ Using on-demand only
    ```
 
-3. **Cost Optimization Opportunities**
+4. **Cost Optimization Opportunities**
    ```
    ✗ No Lambda memory auto-tuning
    ✗ No Spot Lambda usage
    ✗ No Reserved DynamoDB capacity
    ✗ Not using Compute Savings Plans
-   ```
-
-4. **Data Transfer**
-   ```
-   ✗ No optimization of data transfer
-   ✗ Cross-region transfer costs (if added)
-   ✗ No edge caching
    ```
 
 ### 🔧 Recommendations
@@ -709,14 +774,14 @@ def store_new_services(services: List[str]) -> None:
 # Add cost allocation tags
 locals {
   cost_tags = {
-    CostCenter = "Security"
-    Service    = "AWS-Service-Monitor"
-    Owner      = "Platform-Team"
+    CostCenter  = "Security"
+    Service     = "AWS-Service-Monitor"
+    Owner       = "Platform-Team"
     Environment = "Production"
   }
 }
 
-resource "aws_dynamodb_table" "service_registry" {
+resource "aws_dynamodb_table" "approved_services" {
   # ... existing config ...
   tags = merge(var.tags, local.cost_tags)
 }
@@ -726,18 +791,18 @@ resource "aws_dynamodb_table" "service_registry" {
 ```hcl
 # Add budget alert
 resource "aws_budgets_budget" "service_monitor" {
-  name            = "service-monitor-monthly"
-  budget_type     = "MONTHLY"
-  limit_amount    = "10.00"  # Alert if > $10/month
-  limit_unit      = "USD"
-  time_period_start = "2026-04-01"
-  
+  name              = "service-monitor-monthly"
+  budget_type       = "MONTHLY"
+  limit_amount      = "10.00"  # Alert if > $10/month
+  limit_unit        = "USD"
+  time_period_start = "2026-05-01"
+
   notification {
-    comparison_operator        = "GREATER_THAN"
-    notification_type          = "FORECASTED"
-    threshold                  = "100"
-    threshold_type             = "PERCENTAGE"
-    notification_frequency     = "DAILY"
+    comparison_operator    = "GREATER_THAN"
+    notification_type      = "FORECASTED"
+    threshold              = "100"
+    threshold_type         = "PERCENTAGE"
+    notification_frequency = "DAILY"
   }
 }
 ```
@@ -746,7 +811,7 @@ resource "aws_budgets_budget" "service_monitor" {
 ```bash
 # Monitor costs
 aws ce get-cost-and-usage \
-  --time-period Start=2026-04-01,End=2026-04-30 \
+  --time-period Start=2026-05-01,End=2026-05-31 \
   --granularity MONTHLY \
   --metrics UnblendedCost \
   --filter file://cost-filter.json
@@ -808,8 +873,9 @@ aws ce get-cost-and-usage \
    ```
    ✗ No data lifecycle management
    ✗ No cleanup of old entries
-   ✗ Indefinite DynamoDB storage
+   ✗ Indefinite DynamoDB storage (approved services table also has no TTL)
    ✗ CloudWatch Logs kept for 14 days (good, but could be shorter)
+   ✗ Pending approval items accumulate in DynamoDB with no expiry
    ```
 
 4. **Sustainability Reporting**
@@ -827,30 +893,24 @@ aws ce get-cost-and-usage \
 resource "aws_cloudwatch_log_group" "lambda_logs" {
   name              = "/aws/lambda/aws-service-monitor"
   retention_in_days = 7  # Reduce from 14 days
-  
+
   tags = var.tags
 }
 ```
 
 **Priority 2 (Medium)**:
 ```python
-# Add TTL for old DynamoDB entries (cleanup)
-def store_new_services(services: List[str]) -> None:
-    """Store services with TTL for data retention."""
-    table = dynamodb.Table(DYNAMODB_TABLE)
-    timestamp = datetime.utcnow().isoformat()
-    
-    # TTL: 1 year (auto-cleanup old entries)
-    ttl_timestamp = int((datetime.utcnow() + timedelta(days=365)).timestamp())
-    
-    with table.batch_writer(batch_size=25) as batch:
-        for service in services:
-            batch.put_item(Item={
-                'service_name': service,
-                'first_seen': timestamp,
-                'last_updated': timestamp,
-                'ttl': ttl_timestamp  # Auto-delete after 1 year
-            })
+# Add TTL for resolved approval items (keeps table lean)
+def track_service_for_approval(service_name: str, timestamp: str) -> bool:
+    """Record a new service as pending approval with TTL for cleanup."""
+    import time
+    ttl_timestamp = int(time.time()) + (90 * 86400)  # 90 days
+    table.put_item(Item={
+        'service_name': service_name,
+        'approval_status': 'pending',
+        'detected_at': timestamp,
+        'ttl': ttl_timestamp  # Auto-expire stale pending items
+    })
 ```
 
 **Priority 3 (Medium)**:
@@ -873,11 +933,11 @@ def store_new_services(services: List[str]) -> None:
 ┌──────────────────────────────────────────────┐
 │        AWS Well-Architected Score             │
 ├──────────────────────────────────────────────┤
-│ Operational Excellence:  7/10 🟡 Good        │
+│ Operational Excellence:  8/10 🟢 Strong      │
 │ Security:                9/10 🟢 Excellent   │
-│ Reliability:             7/10 🟡 Good        │
-│ Performance Efficiency:  8/10 🟢 Strong      │
-│ Cost Optimization:       9/10 🟢 Excellent   │
+│ Reliability:             8/10 🟢 Strong      │
+│ Performance Efficiency:  7/10 🟡 Good        │
+│ Cost Optimization:       8/10 🟢 Strong      │
 │ Sustainability:          6/10 🟡 Fair        │
 ├──────────────────────────────────────────────┤
 │ OVERALL:                 8/10 🟢 EXCELLENT   │
@@ -888,46 +948,42 @@ def store_new_services(services: List[str]) -> None:
 
 **Status**: ✅ **PRODUCTION READY**
 
-The solution demonstrates strong adherence to AWS Well-Architected principles with solid implementation across most pillars. Security and cost optimization are particularly strong, while operational excellence and sustainability have room for improvement.
+The solution demonstrates strong adherence to AWS Well-Architected principles with solid implementation across most pillars. Security and reliability are particularly strong following the recent additions, while performance efficiency and sustainability have room for improvement.
 
 ### Critical Strengths
 
-1. **Security** (9/10) ⬆️ IMPROVED
+1. **Security** (9/10) — MAINTAINED
    - Baseline integrity verification (T004)
-   - Excellent IAM implementation
-   - Strong input validation
-   - Approval workflows
+   - Checksum updated after legitimate service additions (eliminates false tamper alerts)
+   - Service approval allowlist with DynamoDB audit trail
+   - Excellent IAM implementation (GSI endpoint explicitly granted)
+   - Strong input validation including HTML escaping in approval emails
    - No hardcoded credentials
-   - Two-layer tampering detection
 
-2. **Cost** (9/10)
-   - Minimal monthly cost (~$2)
-   - Appropriate service selection
-   - On-demand pricing
-   - No over-provisioning
+2. **Operational Excellence** (8/10) ⬆️ IMPROVED
+   - CI/CD via GitHub Actions (automated PR review + on-demand Claude assistance)
+   - Service approval workflow reduces manual toil and operational incidents
+   - Operational runbooks added for common failure scenarios
 
-3. **Performance** (8/10)
-   - Well-tuned Lambda
-   - Efficient code
-   - Appropriate memory sizing
-   - Quick execution (~10-20s)
+3. **Reliability** (8/10) ⬆️ IMPROVED
+   - PITR enabled on both DynamoDB tables
+   - Approval workflow prevents incorrect SCP changes that would require rollback
+   - Checksum fix eliminates a class of false-positive failures
 
 ### Key Gaps to Address
 
-1. **Operational Excellence** (7/10)
-   - Add CloudWatch Dashboard
-   - Configure CloudWatch Alarms
-   - Document runbooks
+1. **Performance Efficiency** (7/10) — WATCH
+   - Approval workflow adds ~50-200ms of additional DynamoDB/SES calls per execution
+   - Consider caching the approved services list across warm Lambda invocations
+   - Pending approvals accumulate in DynamoDB with no TTL
 
-2. **Reliability** (7/10)
-   - Add multi-region capability (or document single-region limitation)
-   - Configure alerting
-   - Define RTO/RPO
+2. **Operational Excellence** (8/10)
+   - Add CloudWatch Dashboard and Alarms
+   - Improve approval workflow ergonomics (expiry, reminder emails)
 
 3. **Sustainability** (6/10)
-   - Add data retention policy (TTL)
+   - Add TTL to approval records
    - Track carbon footprint
-   - Optimize log retention
 
 ### Implementation Priority
 
@@ -935,17 +991,18 @@ The solution demonstrates strong adherence to AWS Well-Architected principles wi
 ```
 ✓ Add CloudWatch Dashboard
 ✓ Configure CloudWatch Alarms (errors, timeout, throttles)
-✓ Document operational runbooks
-✓ Reduce CloudWatch Logs retention to 7 days
+✓ Add TTL to approved services / pending approval items
+✓ Add cost allocation tags to both DynamoDB tables
 ⏱️ Effort: 4 hours
 ```
 
 **Phase 2 (Soon - Month 1)**:
 ```
 ✓ Use AWS Secrets Manager for email config
-✓ Enable KMS encryption for DynamoDB
-✓ Add DynamoDB TTL for old entries
+✓ Enable KMS encryption for both DynamoDB tables
+✓ Cache approved services list in Lambda execution context
 ✓ Define RTO/RPO objectives
+✓ Add budget alert ($10/month threshold)
 ⏱️ Effort: 8 hours
 ```
 
@@ -953,6 +1010,7 @@ The solution demonstrates strong adherence to AWS Well-Architected principles wi
 ```
 ✓ GuardDuty integration for threat detection
 ✓ Security Hub integration for compliance monitoring
+✓ Lightweight approval API (API Gateway + Lambda) for one-click email approval
 ✓ Add multi-region setup (optional)
 ✓ Add cost anomaly detection
 ✓ Carbon footprint tracking
@@ -964,15 +1022,32 @@ The solution demonstrates strong adherence to AWS Well-Architected principles wi
 ✅ Baseline integrity verification (T004 - DynamoDB tampering protection)
    - SHA256 checksum verification
    - S3 immutable snapshots with Object Lock
-   - Automated tamper detection and alerting
+   - Automated tamper detection and alerting (email + SNS)
+✅ update_baseline_checksum() — prevents false tamper alerts after new service additions
+✅ Service approval / allowlist workflow
+   - approved-services DynamoDB table with GSI on approval_status
+   - get_approved_services(), track_service_for_approval(), send_approval_request_email()
+   - Approved services excluded from SCP deny list
+   - PITR enabled on approval table
+✅ GitHub Actions CI/CD workflows
+   - claude-code-review.yml — automated PR review on every open/sync/reopen
+   - claude.yml — on-demand Claude assistance via @claude mentions
+✅ main.tf bug fixes
+   - Correct point_in_time_recovery block name
+   - filter {} block in S3 lifecycle rule
+   - Removed reserved AWS_REGION environment variable
 ```
 
 ---
 
 ## Conclusion
 
-The AWS Service Monitor is an **excellently-architected solution** that demonstrates strong alignment with AWS best practices across all pillars. The implementation of T004 (baseline integrity verification) elevates the security posture significantly, providing defense-in-depth against data tampering attacks.
+The AWS Service Monitor is an **excellently-architected solution** that demonstrates strong alignment with AWS best practices across all pillars. The recent additions materially strengthen three pillars:
 
-**Current Status**: 8/10 overall with **strong security** (9/10) and **excellent cost optimization** (9/10)
+- **Operational Excellence**: GitHub Actions CI/CD removes a manual review gap and the approval workflow adds a human oversight gate that reduces operational incidents.
+- **Security**: The checksum fix closes a false-positive gap in tamper detection; the approval allowlist adds an explicit, auditable control over which services reach the SCP deny list.
+- **Reliability**: PITR on the second DynamoDB table and the checksum fix together reduce the blast radius of both accidental and malicious changes.
 
-The solution is **production-ready for enterprise deployments**. With the recommended Phase 1 improvements (operational dashboards, alarms, runbooks), this solution would achieve an estimated **8.5/10 score** across all pillars. Phase 2 improvements (KMS encryption, Secrets Manager) would further elevate it to 9/10 readiness level.
+**Current Status**: 8/10 overall — strong across all pillars with no critical gaps.
+
+The solution is **production-ready for enterprise deployments**. With the recommended Phase 1 improvements (operational dashboards, TTL on approval records, cost tags), the estimated score rises to **8.5/10**. Phase 2 improvements (KMS encryption, Secrets Manager, approved-services caching) would further elevate it to a **9/10** readiness level.

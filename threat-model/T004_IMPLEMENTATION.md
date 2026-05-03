@@ -5,9 +5,11 @@
 **Threat ID**: T004  
 **Threat**: DynamoDB Data Tampering  
 **Risk Level**: MEDIUM (Before) → LOW (After)  
-**Implementation Status**: ✅ COMPLETE
+**Implementation Status**: ✅ COMPLETE (checksum-update bug fixed 2026-05-03)
 
 This document describes the implementation of baseline integrity verification to protect against DynamoDB tampering attacks.
+
+> **2026-05-03 update**: A bug was fixed where the baseline checksum was never updated after new services were legitimately added, causing every subsequent Lambda run to fire a false tamper alert. The function `update_baseline_checksum()` (lambda/index.py lines 357-378) was added and is now called at line 1092 immediately after `store_new_services()`. See the "Bug Fix" section below for details.
 
 ---
 
@@ -313,6 +315,8 @@ is_valid, msg = verify_baseline_integrity()
 if not is_valid:
     logger.critical(f"SECURITY ALERT: {msg}")
     send_tamper_alert_email(msg)
+    send_integrity_alert_sns(msg)   # Also notifies via SNS
+    publish_metrics(0, 0, False)    # CloudWatch metric = 0 triggers alarm
     return {
         'statusCode': 500,
         'body': json.dumps({'error': 'Baseline integrity failed'})
@@ -320,11 +324,48 @@ if not is_valid:
 ```
 
 **Alert Email**:
-- 🚨 Subject: "SECURITY ALERT: Baseline Integrity Violation"
+- Subject: "SECURITY ALERT: Baseline Integrity Violation Detected"
 - Red-highlighted warning box
 - Detailed instructions for incident response
 - References to S3 backup location
 - CloudTrail investigation guidance
+
+### 6. Checksum Update After Legitimate New-Service Writes (Bug Fix)
+
+**Function**: `update_baseline_checksum(all_services: Set[str]) -> bool`
+**Location**: lambda/index.py lines 357-378
+**Called from**: lambda_handler, line 1092
+
+**Problem (pre-fix)**: When new services were detected and stored via `store_new_services()`, the SHA256 checksum in the baseline marker was not updated to reflect the expanded service set. On the *next* Lambda run, `verify_baseline_integrity()` would recalculate a checksum over the now-larger service set, find it did not match the stale stored value, and fire a false tamper alert — halting the run entirely.
+
+**Fix**: `update_baseline_checksum()` is called immediately after `store_new_services()`:
+
+```python
+# lambda_handler, lines 1091-1092
+store_new_services(new_services_list)
+update_baseline_checksum(tracked_services | set(new_services_list))
+```
+
+The function performs an `update_item` on the baseline marker, writing the recalculated checksum, a new timestamp, and the updated service count:
+
+```python
+def update_baseline_checksum(all_services: Set[str]) -> bool:
+    table = dynamodb.Table(DYNAMODB_TABLE)
+    new_checksum = calculate_baseline_checksum(all_services)
+    table.update_item(
+        Key={'service_name': BASELINE_MARKER},
+        UpdateExpression='SET checksum = :checksum, last_updated = :ts, service_count = :count',
+        ExpressionAttributeValues={
+            ':checksum': new_checksum,
+            ':ts': datetime.utcnow().isoformat(),
+            ':count': len(all_services)
+        }
+    )
+    logger.info(f"Updated baseline checksum to {new_checksum[:16]}... ({len(all_services)} services)")
+    return True
+```
+
+**Residual risk from this fix**: The `update_item` call uses no `ConditionExpression`, so an attacker with `dynamodb:UpdateItem` access can freely overwrite the checksum to match any tampered service set. A future hardening step should add a condition asserting the previous checksum value (see THREAT_MODEL.md T004).
 
 ---
 
@@ -379,12 +420,44 @@ aws dynamodb update-item \
 ```
 
 **Defense**:
-1. ✅ Recalculation detects mismatch
-2. ✅ Alert sent (attacker didn't modify all services)
+1. ✅ Recalculation detects mismatch (fake checksum won't match recalculated value)
+2. ✅ Alert sent (attacker didn't modify all services to match)
 3. ✅ S3 snapshot still immutable
 4. ✅ Original checksum in snapshot
 
 **Outcome**: ✅ Attack detected, forensics available
+
+---
+
+### Scenario 4: Coordinated Checksum + Service Modification
+
+**Attack**:
+```bash
+# 1. Delete a service from the registry
+aws dynamodb delete-item \
+  --table-name aws-service-monitor-registry \
+  --key '{"service_name":{"S":"sagemaker"}}'
+
+# 2. Recalculate the correct checksum for the modified service set
+#    (attacker can do this locally using the same SHA256 algorithm)
+
+# 3. Overwrite the stored checksum with the calculated value
+aws dynamodb update-item \
+  --table-name aws-service-monitor-registry \
+  --key '{"service_name":{"S":"__baseline_initialized__"}}' \
+  --update-expression 'SET checksum = :cs' \
+  --expression-attribute-values '{":cs":{"S":"<attacker-calculated-checksum>"}}'
+```
+
+**Defense**:
+1. ✅ CloudTrail logs both the DeleteItem and UpdateItem calls
+2. ✅ S3 snapshot still holds the original service list and checksum for forensic comparison
+3. ✅ CloudWatch alarm fires if `BaselineIntegrityStatus` metric drops to 0 on any run prior to the checksum update completing
+4. ⚠️ If the attacker executes steps 1-3 between Lambda runs, the integrity check on the *next* run will PASS (the modified checksum matches the modified service set)
+
+**Outcome**: ⚠️ Attack succeeds in evading real-time detection if executed atomically between runs. Detected forensically via CloudTrail and S3 snapshot comparison. The S3 snapshot checksum will not match the DynamoDB checksum, which an out-of-band audit would reveal.
+
+**Mitigation**: Add a `ConditionExpression` to `update_baseline_checksum()` that asserts the old checksum value, preventing an attacker from freely overwriting it. See THREAT_MODEL.md T004 residual gaps.
 
 ---
 
@@ -577,13 +650,14 @@ Post-Deployment:
 
 ## Conclusion
 
-T004 mitigation provides **two layers of protection** against baseline tampering:
+T004 mitigation provides **three layers of protection** against baseline tampering:
 
-1. **Checksum verification** - Detects any modification
-2. **S3 immutable snapshots** - Preserves evidence for 90 days
+1. **Checksum verification** (`verify_baseline_integrity()`) — Detects any modification to the service set between runs
+2. **Checksum update after legitimate writes** (`update_baseline_checksum()`) — Prevents false tamper alerts when new services are legitimately added (bug fixed 2026-05-03)
+3. **S3 immutable snapshots** (`store_baseline_snapshot()`) — Preserves original baseline evidence for 90 days under GOVERNANCE Object Lock
 
 **Residual Risk**: LOW  
-**Detection Confidence**: VERY HIGH  
+**Detection Confidence**: HIGH (very high for naive attacks; a coordinated same-day checksum+service modification can evade single-run detection but is visible forensically via S3 snapshot comparison)  
 **Recovery Capability**: EXCELLENT
 
-The baseline data is now protected against unauthorized modification and has forensic evidence for incident investigation.
+**Outstanding hardening item**: Add a `ConditionExpression` to `update_baseline_checksum()` asserting the previous checksum value, preventing an attacker with raw DynamoDB write access from silently neutralising the integrity check. Estimated effort: 30 minutes. See THREAT_MODEL.md T004 for details.

@@ -2,789 +2,459 @@
 
 This document outlines security risks, mitigations, and best practices for the AWS Service Monitor solution.
 
+*Last reviewed: 2026-05-03. Covers lambda/index.py, main.tf, and GitHub Actions workflows including the service approval workflow, baseline checksum fix, and CI/CD pipeline.*
+
+---
+
 ## Executive Summary
 
-**Risk Level**: 🟡 **MEDIUM** (with recommendations)
+**Risk Level**: MEDIUM (with implementation gap noted below)
 
-The solution uses AWS-managed services with proper IAM controls, but automated SCP modifications and external service monitoring require careful operational governance. No hardcoded credentials or data exposure risks, but approval workflows and validation should be added for production use.
+The solution uses AWS-managed services with proper IAM controls. All Priority 1 recommendations from the prior review have been implemented: HTTPS certificate validation is in place, service name validation is enforced, policy syntax is validated before updates, CloudWatch Logs are scoped to the specific log group, and DynamoDB point-in-time recovery is enabled. A service approval/allowlist workflow has been added. One code defect (`MANAGE_SCP_POLICY` undefined at module level — see Section 3) will cause a runtime `NameError` when new services are detected; this should be treated as a high-priority fix.
 
 ---
 
 ## 1. Identity & Access Control (IAM)
 
-### ✅ Strengths
-- **No Hardcoded Credentials**: Uses IAM roles (assumed by Lambda)
-- **Least Privilege Principle**: Each policy grants only required permissions
-- **Separate Roles**: Lambda has dedicated execution role (not shared)
-- **Trust Policy**: Lambda service can only assume the role
-- **Resource-Specific Access**: DynamoDB table ARN is specified exactly
+### Strengths
+- **No Hardcoded Credentials**: Uses IAM roles assumed by Lambda.
+- **Least Privilege Principle**: Each IAM policy grants only the required permissions.
+- **Separate Role**: Lambda has a dedicated execution role.
+- **Trust Policy**: Only the Lambda service principal can assume the role.
+- **Resource-Specific S3 Access**: The Lambda S3 policy is scoped to the specific bucket ARN.
+- **SNS Policy Scoped**: `sns:Publish` is restricted to the specific alerts topic ARN.
+- **CloudWatch Logs Scoped**: Logs policy uses `${aws_cloudwatch_log_group.lambda_logs.arn}:*` — the fix recommended in the prior review is implemented.
+- **DynamoDB Scoped**: Policy covers exactly the two required table ARNs (service registry + approved services) plus the GSI path.
 
-### ⚠️ Risks & Mitigations
+### Residual Risks
 
-#### Risk 1: Organizations API Permissions Too Broad
-**Issue**: Current policy uses wildcard resources for Organizations API
+#### Risk 1: Organizations API — Wildcard Resource (AWS Limitation)
+**Severity**: LOW (acknowledged AWS constraint)
+
+`organizations:ListPolicies`, `organizations:DescribePolicy`, and `organizations:UpdatePolicy` require `"Resource": "*"` because the Organizations API does not support resource-level ARN conditions at the policy statement level.
+
+**Mitigation**: Add a condition to narrow the blast radius to the named SCP:
 ```json
 {
   "Effect": "Allow",
-  "Action": [
-    "organizations:ListPolicies",
-    "organizations:DescribePolicy",
-    "organizations:UpdatePolicy"
-  ],
-  "Resource": "*"
-}
-```
-
-**Why**: Organizations APIs don't support resource-level permissions (ARN specification).
-
-**Mitigation**:
-- ✅ This is AWS limitation, not a code issue
-- Add condition to restrict to specific policy name:
-```json
-{
-  "Effect": "Allow",
-  "Action": "organizations:*",
+  "Action": ["organizations:ListPolicies", "organizations:DescribePolicy", "organizations:UpdatePolicy"],
   "Resource": "*",
   "Condition": {
-    "StringEquals": {
-      "organizations:PolicyName": "blacklist"
-    }
+    "StringEquals": { "organizations:PolicyName": "blacklist" }
   }
 }
 ```
-- Monitor CloudTrail for unexpected policy modifications
+Monitor CloudTrail for unexpected `UpdatePolicy` calls.
 
-#### Risk 2: SES Permissions
-**Issue**: `"ses:SendEmail"` and `"ses:SendRawEmail"` without resource restriction.
+#### Risk 2: SES Permissions — Wildcard Resource (AWS Limitation)
+**Severity**: LOW (acknowledged AWS constraint)
 
-**Why**: SES doesn't support resource-level permissions by default.
-
-**Mitigation**:
-- ✅ Acceptable given SES limitations
-- Verify sender email is only the monitor account
-- Consider using identity policies instead:
+`ses:SendEmail` and `ses:SendRawEmail` cannot be narrowed by resource ARN in a role policy. Optionally add a sender-address condition:
 ```json
 {
   "Effect": "Allow",
-  "Action": "ses:SendEmail",
+  "Action": ["ses:SendEmail", "ses:SendRawEmail"],
   "Resource": "*",
   "Condition": {
-    "StringEquals": {
-      "ses:FromAddress": ["aws-monitor@example.com"]
-    }
+    "StringEquals": { "ses:FromAddress": "aws-monitor@example.com" }
   }
 }
 ```
 
-#### Risk 3: CloudWatch Logs Access
-**Issue**: Logs policy allows all log groups: `"logs:*:*:*"`
+#### Risk 3: CloudWatch Metrics — Wildcard Resource (AWS Limitation)
+**Severity**: LOW (acknowledged AWS constraint)
 
-**Mitigation**:
-- ✅ Already scoped to function-specific log group in Terraform
-- Restrict to specific log group ARN:
-```json
-{
-  "Effect": "Allow",
-  "Action": [
-    "logs:CreateLogGroup",
-    "logs:CreateLogStream",
-    "logs:PutLogEvents"
-  ],
-<<<<<<< HEAD
-  "Resource": "arn:aws:logs:eu-west-2:ACCOUNT:log-group:/aws/lambda/aws-service-monitor:*"
-}
-```
+`cloudwatch:PutMetricData` requires `"Resource": "*"`. The custom namespace `AWS/ServiceMonitor` contains no sensitive data. No additional mitigation available.
 
-**Recommended Fix**: Update `main.tf`:
-```hcl
-resource "aws_iam_role_policy" "lambda_logs_policy" {
-  policy = jsonencode({
-    Statement = [{
-      Effect = "Allow"
-      Action = [
-        "logs:CreateLogGroup",
-        "logs:CreateLogStream",
-        "logs:PutLogEvents"
-      ]
-      Resource = "${aws_cloudwatch_log_group.lambda_logs.arn}:*"
-    }]
-  })
-}
-```
+#### Risk 4: Approved Services Table — Missing DeleteItem Permission
+**Severity**: INFO
+
+The DynamoDB policy grants `GetItem`, `PutItem`, `UpdateItem`, `Query`, and `Scan`. Approval records written by `track_service_for_approval()` cannot be deleted by Lambda. If future cleanup is needed (e.g., removing stale pending records), `dynamodb:DeleteItem` will need to be added. This is currently correct by design (no delete path in the code) but should be noted for future development.
 
 ---
 
 ## 2. Data Protection
 
-### ✅ Strengths
-- **DynamoDB Encryption**: AWS-managed keys by default
-- **TLS in Transit**: All AWS API calls use TLS 1.2+
-- **No Sensitive Data**: Service registry stores only service names
-- **CloudWatch Encryption**: Encrypted at rest
+### Strengths
+- **DynamoDB Encryption**: AWS-managed keys by default on both tables.
+- **DynamoDB PITR**: Point-in-time recovery is enabled on both the service registry and approved services tables (prior recommendation implemented).
+- **TLS in Transit**: All AWS API calls use TLS 1.2+.
+- **No Sensitive Data in Registry**: Service registry stores only service names.
+- **S3 Baseline Bucket**: Server-side encryption (AES256), versioning enabled, public access fully blocked, 90-day GOVERNANCE object lock for immutability.
+- **S3 Lifecycle**: Snapshots expire after 365 days; non-current versions after 90 days.
 
-### ⚠️ Risks & Mitigations
+### Residual Risks
 
 #### Risk 1: CloudWatch Logs Retention
-**Issue**: 14-day retention could be too long/short depending on requirements.
+**Severity**: LOW
 
-**Mitigation**:
+14-day retention may be insufficient for compliance or forensic requirements. Adjust to 30–90 days:
 ```hcl
 resource "aws_cloudwatch_log_group" "lambda_logs" {
-  retention_in_days = 30  # Adjust based on compliance needs
+  retention_in_days = 90
 }
 ```
 
-#### Risk 2: DynamoDB Backup
-**Issue**: No automatic backups enabled by default.
+#### Risk 2: Approved Services Table — No Encryption Key Specified
+**Severity**: LOW
 
-**Mitigation**:
+The `approved_services` DynamoDB table uses AWS-managed encryption by default, which is acceptable. If compliance requires customer-managed keys (CMK), add:
 ```hcl
-resource "aws_dynamodb_table" "service_registry" {
-  point_in_time_recovery_specification {
-    enabled = true
-  }
+server_side_encryption {
+  enabled     = true
+  kms_key_arn = aws_kms_key.dynamodb.arn
 }
 ```
 
-#### Risk 3: Service Reference Fetch - HTTPS Validation
-**Issue**: Code fetches from external URL without certificate validation.
+#### Risk 3: Email Recipients in Environment Variables
+**Severity**: LOW
 
-**Current Code**:
-```python
-http = urllib3.PoolManager()
-response = http.request('GET', SERVICE_REFERENCE_URL, timeout=30)
-```
+`EMAIL_RECIPIENTS`, `APPROVAL_RECIPIENTS`, and `SENDER_EMAIL` are stored in Lambda environment variables, visible in the Lambda console and CloudTrail `UpdateFunctionConfiguration` events. These are not secrets (they are email addresses), but if your threat model includes insider threats with console access, consider moving them to SSM Parameter Store.
 
-**Risk**: Vulnerable to Man-in-the-Middle (MITM) attacks on the fetch.
+#### Risk 4: Service Reference Fetch — HTTPS Now Enforced (Prior Issue Resolved)
+**Severity**: RESOLVED
 
-**Mitigation**:
-```python
-import urllib3
-from urllib3.util.ssl_ import create_urllib3_context
-
-# Enable certificate verification
-http = urllib3.PoolManager(
-    cert_reqs='CERT_REQUIRED',
-    ca_certs=certifi.where()  # pip install certifi
-)
-
-# Or use requests library (easier, more secure by default)
-import requests
-response = requests.get(SERVICE_REFERENCE_URL, timeout=30, verify=True)
-```
-
-**Recommendation**: Use `requests` library instead of `urllib3`:
-```bash
-# Update lambda/requirements.txt
-boto3>=1.26.0
-requests>=2.28.0
-```
-
-```python
-import requests
-
-def fetch_aws_services() -> Set[str]:
-    try:
-        response = requests.get(
-            SERVICE_REFERENCE_URL,
-            timeout=30,
-            verify=True  # Enforce HTTPS certificate validation
-        )
-        response.raise_for_status()  # Raise on 4xx/5xx
-        data = response.json()
-        # ... rest of logic
-    except requests.exceptions.SSLError:
-        logger.error("SSL certificate validation failed")
-        return set()
-    except requests.RequestException as e:
-        logger.error(f"Failed to fetch: {e}")
-        return set()
-```
+The prior risk (missing SSL verification) is resolved. The code uses `requests.get(..., verify=True)` with explicit `SSLError` handling. The `requests` library is in `lambda/requirements.txt`.
 
 ---
 
 ## 3. Service Control Policy Management
 
-### ⚠️ Critical Risks
+### Strengths
+- **Approval Gate**: `REQUIRE_APPROVAL = true` by default; when set, SCP changes are stored as pending and not applied automatically.
+- **Policy Syntax Validation**: `validate_policy_document()` checks structure and JSON serializability before any `UpdatePolicy` call.
+- **Service Name Validation**: `validate_service_names()` enforces lowercase alphanumeric + hyphens, minimum length 2, maximum length 30 before any service reaches the SCP.
+- **HTML Escaping**: Service names are escaped with `html.escape()` before insertion into email bodies.
+- **Deep Copy Before Mutation**: `update_scp_with_services()` works on a `copy.deepcopy()` of the policy, so the original is never mutated before validation succeeds.
 
-#### Risk 1: Automated Policy Modifications Without Approval
-**Severity**: 🔴 **HIGH**
+### Active Issues
 
-**Issue**: Lambda automatically updates SCP without human review/approval.
+#### Issue 1: MANAGE_SCP_POLICY Undefined — Runtime NameError
+**Severity**: HIGH
 
-**Risk Scenario**:
-- Service Reference contains incorrect data
-- Lambda adds wrong/harmful service deny rules
-- Policy breaks production workloads across org
+`lambda/index.py` references `MANAGE_SCP_POLICY` at line 1111 inside `lambda_handler()`, but this variable is never defined at module level (it is not in the `os.environ` parsing block at lines 22–32, and it is not set as a Terraform environment variable in `main.tf`). On any execution where new services are detected, the code will raise a `NameError: name 'MANAGE_SCP_POLICY' is not defined`, causing the Lambda to return HTTP 500 and leaving new services tracked in DynamoDB but the SCP unmodified.
 
-**Mitigation Options**:
-
-**Option A: Add Approval Workflow** (Recommended)
+**Fix**: Add to `lambda/index.py` module-level env var block:
 ```python
-# Create SNS topic for approvals
-import boto3
-sns = boto3.client('sns')
-
-def update_scp_with_approval(scp_policy, new_services):
-    # Preview the changes
-    preview = generate_scp_preview(scp_policy, new_services)
-    
-    # Send for approval
-    approval_message = f"""
-    Pending SCP Update - {len(new_services)} new services
-    
-    Preview:
-    {preview}
-    
-    Approve: https://console.aws.amazon.com/...
-    Deny: https://console.aws.amazon.com/...
-    """
-    
-    sns.publish(
-        TopicArn=APPROVAL_TOPIC_ARN,
-        Subject='SCP Update Approval Required',
-        Message=approval_message
-    )
-    
-    # Store pending update in DynamoDB
-    store_pending_update(scp_policy, new_services)
+MANAGE_SCP_POLICY = os.environ.get('MANAGE_SCP_POLICY', 'true').lower() == 'true'
+```
+And add to the `environment` block in `main.tf`:
+```hcl
+MANAGE_SCP_POLICY = var.manage_scp_policy ? "true" : "false"
 ```
 
-**Option B: Manual Review Step** (Simpler)
+#### Risk 2: Approval Workflow — No Approver Authentication
+**Severity**: MEDIUM
+
+The approval workflow (`send_approval_request_email`, `track_service_for_approval`) records services as `pending` in DynamoDB and instructs approvers to manually edit `terraform.tfvars` and run `terraform apply`. There is no in-band approval mechanism (no signed token, no step function callback). Any person with write access to `terraform.tfvars` can approve services, and the system has no record of who approved what.
+
+**Mitigation**: For audit compliance, document that approval is via Terraform PR review (Git history serves as the audit trail). If stronger attribution is required, implement a Step Functions human-approval pattern or an SNS-to-Lambda approval callback.
+
+#### Risk 3: Approved Services List in Environment Variables
+**Severity**: LOW
+
+`APPROVED_SERVICES_LIST` is stored in Lambda environment variables (sourced from `var.approved_services` in `terraform.tfvars`). This list is visible in the Lambda console. Approved services are not sensitive, but any change to the list requires `terraform apply`, which provides an implicit change-control record via Git.
+
+#### Risk 4: Service Reference Data Integrity
+**Severity**: MEDIUM (unchanged from prior review)
+
+The system trusts the AWS service reference endpoint at `https://servicereference.eu-west-2.amazonaws.com/` without a secondary integrity check. If AWS temporarily returns malformed or unexpected data, the service name validator (`SERVICE_NAME_PATTERN`, `MAX_SERVICE_NAME_LENGTH`) provides a first line of defence by rejecting names that do not match the expected format. Consider also alerting when the number of newly detected services in a single run exceeds a threshold (e.g., more than 10), as a large batch could indicate a data anomaly:
 ```python
-# Don't update SCP automatically
-# Instead, send dry-run report
-def lambda_handler(event, context):
-    new_services = identify_new_services()
-    
-    if new_services:
-        # Store in DynamoDB with status='pending_review'
-        store_pending_services(new_services, status='pending_review')
-        
-        # Send email with "Click to approve" link
-        send_approval_email(new_services)
-        
-        # Return without updating SCP
-        return {'status': 'pending_approval'}
-    
-# Separate Lambda function (triggered manually or by approval)
-def approve_scp_update(event, context):
-    pending = get_pending_services()
-    scp = get_scp_policy()
-    update_scp_with_services(scp, pending)
-    mark_as_approved(pending)
+MAX_NEW_SERVICES_PER_RUN = int(os.environ.get('MAX_NEW_SERVICES_PER_RUN', '10'))
+if len(valid_services) > MAX_NEW_SERVICES_PER_RUN:
+    logger.error(f"Anomaly: {len(valid_services)} new services in one run, aborting")
+    return {'statusCode': 400, ...}
 ```
 
-**Option C: Dry-Run Mode** (Non-Breaking)
+#### Risk 5: SCP Statement Targeting — Sid-Based Selection
+**Severity**: INFO
+
+The code in `update_scp_with_services()` finds the statement to update by looking for the first `"Effect": "Deny"` statement. The `scp_sid` variable and `SCP_SID` env var exist but are not used in the statement lookup logic — the code matches on `Effect` only. If the SCP has multiple Deny statements, the code will always modify the first one, which may not be the intended `BlockNewServices` statement.
+
+**Fix**: Update `update_scp_with_services()` and `generate_scp_preview()` to match on `Sid` when `SCP_SID` is set:
 ```python
-def lambda_handler(event, context):
-    new_services = identify_new_services()
-    
-    if new_services:
-        # Show what WOULD be changed
-        preview_scp = generate_scp_preview(scp, new_services)
-        
-        # Email admin with changes for review
-        send_preview_email(new_services, preview_scp)
-        
-        # Store for manual approval
-        # Don't call update_scp()
-        
-        return {
-            'new_services': new_services,
-            'action': 'preview_sent',
-            'scp_would_change': preview_scp
-        }
-```
-
-#### Risk 2: Service Reference Data Integrity
-**Severity**: 🟡 **MEDIUM**
-
-**Issue**: Trusts AWS service reference without validation.
-
-**Risk Scenario**:
-- AWS service reference temporarily contains incorrect data
-- Bad data propagates to SCP policy
-- Takes time to discover and remediate
-
-**Mitigation**:
-```python
-def validate_new_services(new_services: Set[str]) -> bool:
-    """Validate services against known patterns."""
-    invalid = []
-    
-    for service in new_services:
-        # Check service name format (AWS services are lowercase alphanumeric + hyphens)
-        if not re.match(r'^[a-z0-9\-]+$', service):
-            invalid.append(service)
-        
-        # Check against known service patterns
-        # AWS services are typically under 20 chars
-        if len(service) > 30:
-            invalid.append(service)
-    
-    if invalid:
-        logger.warning(f"Invalid services detected: {invalid}")
-        # Don't process invalid services
-        new_services = new_services - set(invalid)
-    
-    return len(new_services) > 0
-
-# Use in lambda_handler
-if new_services:
-    if not validate_new_services(new_services):
-        logger.error("Validation failed, aborting update")
-        return {'statusCode': 400, 'error': 'Validation failed'}
-```
-
-#### Risk 3: SCP Policy Syntax Validation
-**Severity**: 🟡 **MEDIUM**
-
-**Issue**: No validation of resulting SCP policy before update.
-
-**Mitigation**:
-```python
-import json
-
-def validate_policy_syntax(policy_document: dict) -> tuple[bool, str]:
-    """Validate IAM policy syntax."""
-    try:
-        # Check required fields
-        if 'Statement' not in policy_document:
-            return False, "Missing Statement"
-        
-        for statement in policy_document['Statement']:
-            if 'Effect' not in statement:
-                return False, "Missing Effect in statement"
-            if statement['Effect'] not in ['Allow', 'Deny']:
-                return False, f"Invalid Effect: {statement['Effect']}"
-            if 'Action' not in statement:
-                return False, "Missing Action in statement"
-            if 'Resource' not in statement:
-                return False, "Missing Resource in statement"
-        
-        # Try to convert to JSON (catch serialization errors)
-        json.dumps(policy_document)
-        
-        return True, "Valid"
-    
-    except Exception as e:
-        return False, str(e)
-
-def update_scp_with_services(scp_policy, new_services):
-    """Update SCP with validation."""
-    original_policy = copy.deepcopy(scp_policy['content'])
-    
-    # Make changes
-    modify_policy(scp_policy['content'], new_services)
-    
-    # Validate syntax
-    is_valid, error = validate_policy_syntax(scp_policy['content'])
-    if not is_valid:
-        logger.error(f"Policy validation failed: {error}")
-        # Restore original
-        scp_policy['content'] = original_policy
-        raise ValueError(f"Invalid policy: {error}")
-    
-    # Update if valid
-    organizations.update_policy(
-        PolicyId=scp_policy['id'],
-        Content=json.dumps(scp_policy['content'])
-    )
+SCP_SID = os.environ.get('SCP_SID', 'BlockNewServices')
+# In the loop:
+if statement.get('Sid') == SCP_SID:
+    deny_statement = statement
+    break
 ```
 
 ---
 
-## 4. Network Security
+## 4. Baseline Integrity System
 
-### ✅ Strengths
-- **Public HTTP Not Used**: Only HTTPS for service reference
-- **No Open Ports**: Lambda doesn't need inbound access
-- **No VPC Required**: Reduces attack surface
+### Strengths
+- **SHA256 Checksums**: `calculate_baseline_checksum()` produces a deterministic hash over a sorted JSON representation of all tracked service names.
+- **Immutable S3 Snapshots**: Baseline snapshots are written to an S3 bucket with GOVERNANCE-mode object lock (90-day retention), server-side encryption, and public access blocked.
+- **Tamper Alert Path**: `verify_baseline_integrity()` compares the stored checksum against a live recalculation and sends both email and SNS alerts on mismatch.
+- **Race Condition Prevention on Init**: `initialize_baseline()` uses a DynamoDB conditional write (`attribute_not_exists`) to prevent duplicate initialization.
 
-### ⚠️ Risks
+### Baseline Checksum Update (Recent Addition)
+
+The `update_baseline_checksum()` function was added to recalculate and persist the baseline checksum immediately after new services are stored in DynamoDB. This resolves a correctness issue where a successful service detection run would leave the stored checksum out of sync with the actual table contents, causing the next run to flag a false integrity violation.
+
+**Security assessment**: The fix is correct and necessary. The checksum update is performed synchronously in the same Lambda invocation as the service write, before the function returns. This maintains the integrity property: the stored checksum always reflects the actual set of tracked services after a successful run.
+
+**Residual concern**: If the Lambda times out or is killed between `store_new_services()` (line 1091) and `update_baseline_checksum()` (line 1092), the checksum will be stale and the next run will raise a false tamper alert. This is an edge case inherent to non-atomic DynamoDB multi-write operations. The impact is a false positive alert — not a security bypass. The S3 immutable snapshot can be used to distinguish a genuine tamper from a partial-write scenario.
+
+### Residual Risks
+
+#### Risk 1: Checksum Covers Service Names Only
+**Severity**: LOW
+
+The baseline checksum is computed only over `service_name` values. It does not cover the `is_baseline`, `first_seen`, or `last_updated` attributes. An attacker with DynamoDB write access who wanted to add a service silently would need to add a new item (detectable) or modify an existing service name (detectable). Modifying metadata fields is not detectable via the checksum, but metadata fields are not security-sensitive.
+
+#### Risk 2: Baseline Marker Not Covered by Checksum
+**Severity**: LOW
+
+The `__baseline_initialized__` marker item is excluded from the checksum calculation via the `begins_with(service_name, :prefix)` filter. This is correct (the marker should not contribute to the service-set checksum), but it means an attacker could modify the stored checksum value in the marker item to match a corrupted service set. The S3 immutable snapshot provides the independent verification needed to detect this scenario.
+
+---
+
+## 5. GitHub Actions CI/CD Security
+
+### Workflow Overview
+Two workflows are in `.github/workflows/`:
+- `claude.yml`: Triggers Claude Code on `@claude` mentions in issues and pull request comments/reviews.
+- `claude-code-review.yml`: Automatically runs a Claude Code Review on every pull request open/update.
+
+### Strengths
+- **Minimal Permissions**: Both workflows declare only `contents: read`, `pull-requests: read`, `issues: read`, `id-token: write`, and `actions: read`. No `write` permissions to repository contents, secrets, or packages.
+- **Secret via GitHub Secrets**: The Anthropic API key is passed as `${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}`, not hardcoded.
+- **Pinned Checkout Action**: Both workflows use `actions/checkout@v4` (major-version pin).
+- **No Elevated Shell Access by Default**: Neither workflow has `claude_args` overrides that would grant unrestricted Bash access.
+
+### Risks
+
+#### Risk 1: Third-Party Action — Unpinned to Digest
+**Severity**: MEDIUM
+
+Both workflows use `anthropics/claude-code-action@v1` (a mutable tag, not a commit SHA digest). If the action repository is compromised or the `v1` tag is moved to a malicious commit, it will execute with access to the `CLAUDE_CODE_OAUTH_TOKEN` secret.
+
+**Mitigation**: Pin to a specific commit SHA:
+```yaml
+uses: anthropics/claude-code-action@<full-sha>  # e.g., @abc1234...
+```
+Review the action's release notes before updating the pin.
+
+#### Risk 2: CLAUDE_CODE_OAUTH_TOKEN Scope
+**Severity**: MEDIUM
+
+The `CLAUDE_CODE_OAUTH_TOKEN` secret grants access to the Anthropic API on behalf of the account. If a pull request from a fork triggers `claude-code-review.yml`, the secret would be exposed to the fork's workflow context. GitHub does not pass secrets to fork pull requests by default for public repositories, but this should be confirmed.
+
+**Mitigation**: Verify the repository is private, or add a trigger guard:
+```yaml
+if: github.event.pull_request.head.repo.full_name == github.repository
+```
+This prevents the review workflow from running on fork PRs where the secret context may behave differently.
+
+#### Risk 3: Claude Code Agent — Code Execution Scope
+**Severity**: MEDIUM
+
+The `claude.yml` workflow (triggered by `@claude` mentions) runs the Claude Code agent with no `claude_args` restrictions. In principle this allows any commenter who can write `@claude` on an issue to instruct the agent to run arbitrary Bash commands within the GitHub Actions runner. The `contents: read` permission limits what the agent can commit back, but the runner itself has network access.
+
+**Mitigation**: Restrict the `@claude` trigger to trusted collaborators, or add `allowed-tools` constraints:
+```yaml
+claude_args: '--allowed-tools Bash(gh pr *),Bash(gh issue *)'
+```
+Also consider adding a collaborator check in the `if:` condition:
+```yaml
+if: |
+  github.event.comment.author_association == 'OWNER' ||
+  github.event.comment.author_association == 'MEMBER' ||
+  github.event.comment.author_association == 'COLLABORATOR'
+```
+
+#### Risk 4: Plugin Marketplace in Code Review Workflow
+**Severity**: LOW
+
+`claude-code-review.yml` uses `plugin_marketplaces: 'https://github.com/anthropics/claude-code.git'` and `plugins: 'code-review@claude-code-plugins'`. This fetches plugin code from an external GitHub repository at runtime. If that repository is compromised or the plugin reference is manipulated, the plugin code executes in the runner context.
+
+**Mitigation**: Pin the plugin reference to a specific commit or release tag once the `claude-code-action` supports digest pinning for plugins.
+
+#### Risk 5: Merge Conflict Markers in SECURITY.md
+**Severity**: INFO (resolved in this update)
+
+The previous version of SECURITY.md contained unresolved Git merge conflict markers (`<<<<<<<`, `=======`, `>>>>>>>`). These have been removed in this revision. Ensure the source branch conflict is fully resolved before merging.
+
+---
+
+## 6. Network Security
+
+### Strengths
+- **HTTPS Enforced**: `requests.get(..., verify=True)` with explicit `SSLError` handling (prior recommendation implemented).
+- **No Open Ports**: Lambda requires no inbound access.
+- **No VPC**: Reduces attack surface for this use case.
+
+### Residual Risks
 
 #### Risk 1: Lambda Internet Access
-**Issue**: Lambda has outbound internet access to fetch service reference.
+**Severity**: LOW (accepted)
 
-**Mitigation**:
-- ✅ Acceptable for this use case
-- Monitor outbound traffic with VPC Flow Logs (if VPC used)
-- Whitelist destination IPs if possible
+Lambda requires outbound internet access to reach `servicereference.eu-west-2.amazonaws.com`. This is expected and acceptable. If a VPC is added in future, configure a NAT gateway or VPC endpoint as appropriate.
 
 #### Risk 2: DNS Spoofing
-**Issue**: Service reference URL could be DNS-spoofed.
+**Severity**: LOW
 
-**Mitigation**:
-```python
-import socket
-
-def validate_service_reference_domain():
-    """Verify service reference domain."""
-<<<<<<< HEAD
-    domain = "servicereference.eu-west-2.amazonaws.com"
-=======
-    domain = "servicereference.us-east-1.amazonaws.com"
->>>>>>> origin/main
-    
-    try:
-        ip = socket.gethostbyname(domain)
-        # Verify IP is AWS IP range
-        if not is_aws_ip(ip):
-            raise Exception(f"Service reference DNS resolved to non-AWS IP: {ip}")
-    except socket.gaierror:
-        raise Exception("Service reference domain resolution failed")
-
-def is_aws_ip(ip):
-    """Check if IP is in AWS IP ranges."""
-    # Use boto3 to get current AWS IP ranges
-    import requests
-    response = requests.get('https://ip-ranges.amazonaws.com/ip-ranges.json')
-    ranges = response.json()
-    
-    # Check if IP is in any AWS CIDR block
-    for prefix in ranges['prefixes']:
-        if ip_in_cidr(ip, prefix['ip_prefix']):
-            return True
-    return False
-```
+The `requests` library with `verify=True` validates the TLS certificate against the CA bundle, which provides protection against DNS spoofing (an attacker redirecting the domain to a different IP would not hold a valid certificate for `amazonaws.com`). No additional DNS validation is required.
 
 ---
 
-## 5. Email & SES Security
+## 7. Email & SES Security
 
-### ⚠️ Risks
+### Strengths
+- **HTML Escaping**: `generate_html_email()` applies `html.escape()` to service names in the HTML body (line 778). `send_approval_request_email()` also escapes the service name via `escape(service_name)` (line 940).
+- **Text Email Safety**: Plain-text emails do not require HTML escaping. Service names have already been validated by `validate_service_names()` before reaching the email functions.
+- **Structured SES Calls**: Emails use the `ses.send_email()` structured API (not raw SMTP), limiting header injection risk.
 
-#### Risk 1: Email Address Verification
-**Issue**: If recipients not verified in SES, emails won't be delivered (if in sandbox).
+### Residual Risks
 
-**Mitigation**:
-```bash
-# Verify all addresses before deployment
-aws ses verify-email-identity --email-address ops-team@example.com
-```
+#### Risk 1: Approval Email — Service Name in Code Block
+**Severity**: LOW
 
-#### Risk 2: Email Content Injection
-**Issue**: Service names could theoretically contain email/HTML injection.
-
-**Mitigation**:
+`send_approval_request_email()` renders the safe (escaped) service name inside a `<pre>` block for the Terraform snippet:
 ```python
-from html import escape
-import email.utils
-
-def generate_html_email(services: List[str], timestamp: str) -> str:
-    """Generate HTML with proper escaping."""
-    # Escape service names for HTML
-    services_html = '\n'.join([
-        f'                <li>{escape(service)}</li>'
-        for service in sorted(services)
-    ])
-    
-    # Validate timestamp format
-    try:
-        datetime.fromisoformat(timestamp)
-    except ValueError:
-        timestamp = datetime.utcnow().isoformat()
-    
-    html = f"""<html>..."""
-    return html
-
-def generate_text_email(services: List[str], timestamp: str) -> str:
-    """Generate text with proper escaping."""
-    # Text doesn't need HTML escaping, but validate
-    services_text = '\n'.join([
-        f'  - {service}'  # Plain text safe
-        for service in sorted(services)
-    ])
-    return f"""..."""
+<pre ...>approved_services = ["{safe_name}"]</pre>
 ```
+The service name has been validated to match `^[a-z0-9\-]+$`, so it cannot contain quotes, backslashes, or injection characters. This is safe.
 
-#### Risk 3: Email Recipients List Exposure
-**Issue**: Email recipients list stored in Lambda environment variables.
+#### Risk 2: Email Recipients List Exposure
+**Severity**: LOW (unchanged)
 
-**Risk**: Could be visible in Lambda console, CloudTrail, or logs.
+`EMAIL_RECIPIENTS` and `APPROVAL_RECIPIENTS` are stored in Lambda environment variables, visible in the AWS console. These are email addresses, not credentials. Acceptable given the operational model.
 
-**Mitigation**:
+#### Risk 3: SES Sandbox Mode
+**Severity**: OPERATIONAL
+
+If the AWS account SES is in sandbox mode, emails can only be sent to verified addresses. Ensure all addresses in `email_recipients` and `approval_recipients` are SES-verified before deployment. The approval workflow sends per-service emails (`send_approval_request_email` is called once per unapproved service), which could generate significant SES volume if many services are detected at once. Monitor SES sending quotas.
+
+---
+
+## 8. Lambda Security
+
+### Strengths
+- **Top-level Exception Handler**: `lambda_handler()` wraps all logic in a `try/except Exception` and returns HTTP 500 with a sanitized message on unexpected errors.
+- **Input Validation at Entry**: Service names from the external source are validated before any downstream action.
+- **Print vs Logger Residue**: `store_new_services()` and `get_scp_policy()` still use `print()` instead of `logger`. This is cosmetic but means those messages bypass the structured logging configuration and may not appear in CloudWatch Insights queries that filter by log level.
+
+### Residual Risks
+
+#### Risk 1: MANAGE_SCP_POLICY NameError (see Section 3 — Issue 1)
+**Severity**: HIGH
+
+Runtime crash when new services are detected.
+
+#### Risk 2: Partial-Write on Timeout
+**Severity**: LOW
+
+If Lambda times out between `store_new_services()` and `update_baseline_checksum()`, the table and checksum will be inconsistent, triggering a false tamper alert on the next run. S3 baseline snapshots allow distinguishing this from genuine tampering.
+
+#### Risk 3: store_pending_scp_update — Uses Service Registry Table
+**Severity**: INFO
+
+`store_pending_scp_update()` writes a `__pending_scp_update__<timestamp>` item to `DYNAMODB_TABLE` (the service registry). Items prefixed with `__` are filtered out of `get_tracked_services()` correctly. However, `verify_baseline_integrity()` uses a DynamoDB filter expression that also excludes `__`-prefixed items, so pending SCP update records do not interfere with integrity checks. This is correct behaviour but worth documenting: the service registry table serves dual purpose.
+
+#### Risk 4: No Dead Letter Queue
+**Severity**: LOW (unchanged from prior review)
+
+A Lambda DLQ has not been configured. Failed invocations (e.g., from EventBridge retries on a crash) are not captured. Consider:
 ```hcl
-# Option 1: Use AWS Secrets Manager
-resource "aws_secretsmanager_secret" "email_recipients" {
-  name = "aws-service-monitor/email-recipients"
-}
-
-resource "aws_secretsmanager_secret_version" "email_recipients" {
-  secret_id = aws_secretsmanager_secret.email_recipients.id
-  secret_string = jsonencode({
-    recipients = var.email_recipients
-    sender     = var.sender_email
-  })
-}
-
-# In Lambda, fetch from Secrets Manager
-import boto3
-secrets = boto3.client('secretsmanager')
-secret = json.loads(secrets.get_secret_value(
-    SecretId='aws-service-monitor/email-recipients'
-)['SecretString'])
-EMAIL_RECIPIENTS = secret['recipients']
-```
-
-```python
-# Option 2: Use AWS Systems Manager Parameter Store
-import boto3
-ssm = boto3.client('ssm')
-
-# At Lambda startup
-EMAIL_RECIPIENTS = json.loads(
-    ssm.get_parameter(
-        Name='/aws-service-monitor/email-recipients',
-        WithDecryption=True
-    )['Parameter']['Value']
-)
-```
-
----
-
-## 6. Lambda Security
-
-### ⚠️ Risks
-
-#### Risk 1: Timeout / Hanging
-**Issue**: Lambda times out during service fetch or SCP update.
-
-**Current**: 300 second timeout
-
-**Risk**: Could leave policy in inconsistent state.
-
-**Mitigation**:
-```python
-import signal
-
-def timeout_handler(signum, frame):
-    raise TimeoutError("Operation exceeded timeout")
-
-def lambda_handler(event, context):
-    # Set signal alarm
-    signal.signal(signal.SIGALRM, timeout_handler)
-    signal.alarm(int(context.get_remaining_time_in_millis() / 1000) - 10)
-    
-    try:
-        # Main logic with transaction-like behavior
-        transaction = {
-            'services': None,
-            'ddb_written': False,
-            'scp_updated': False,
-            'email_sent': False
-        }
-        
-        new_services = identify_new_services()
-        transaction['services'] = new_services
-        
-        # Only proceed if time permits
-        if context.get_remaining_time_in_millis() < 30000:
-            logger.warning("Insufficient time remaining, aborting")
-            return {'statusCode': 408, 'error': 'timeout'}
-        
-        # ... continue with other operations
-    
-    finally:
-        signal.alarm(0)  # Cancel alarm
-```
-
-#### Risk 2: Cold Start Delay
-**Issue**: Lambda cold start could cause timeout.
-
-**Mitigation**:
-```hcl
-resource "aws_lambda_function" "service_monitor" {
-  ephemeral_storage {
-    size = 512  # MB, can improve cold start
-  }
-  
-  memory_size = 512  # Larger memory = faster CPU = faster cold start
-}
-
-# Or use Lambda Provisioned Concurrency
-resource "aws_lambda_provisioned_concurrency_config" "service_monitor" {
-  function_name                     = aws_lambda_function.service_monitor.function_name
-  provisioned_concurrent_executions = 1
-  qualifier                         = aws_lambda_function.service_monitor.version
-}
-```
-
-#### Risk 3: Unhandled Exceptions
-**Issue**: Exceptions could leave system in inconsistent state.
-
-**Mitigation**:
-```python
-def lambda_handler(event, context):
-    try:
-        # ... main logic ...
-        return {'statusCode': 200, 'body': 'Success'}
-    
-    except TimeoutError:
-        logger.error("Operation timeout - possible partial update")
-        # Don't update DDB with success if SCP might not be updated
-        return {'statusCode': 408, 'error': 'timeout'}
-    
-    except Exception as e:
-        logger.exception("Unexpected error")
-        # Send alert email
-        send_error_alert(str(e), traceback.format_exc())
-        return {'statusCode': 500, 'error': str(e)}
-```
-
----
-
-## 7. Operational Security
-
-### ⚠️ Risks
-
-#### Risk 1: No Alerting on Policy Drift
-**Issue**: If someone manually changes the SCP, monitoring won't detect it.
-
-**Mitigation**:
-```python
-def lambda_handler(event, context):
-    current_policy = get_scp_policy()
-    expected_policy = load_expected_policy()  # From Terraform state
-    
-    if current_policy != expected_policy:
-        logger.warning("SCP policy drift detected")
-        send_drift_alert(current_policy, expected_policy)
-        # Don't update if drift exists
-        return {'statusCode': 409, 'error': 'policy_drift'}
-```
-
-#### Risk 2: No Rate Limiting
-**Issue**: EventBridge could invoke Lambda excessively if misconfigured.
-
-**Mitigation**:
-```python
-# Add DLQ (Dead Letter Queue) for failed invocations
 resource "aws_sqs_queue" "lambda_dlq" {
   name = "aws-service-monitor-dlq"
 }
-
-resource "aws_lambda_function" "service_monitor" {
-  dead_letter_config {
-    target_arn = aws_sqs_queue.lambda_dlq.arn
-  }
+# reference in aws_lambda_function.service_monitor:
+dead_letter_config {
+  target_arn = aws_sqs_queue.lambda_dlq.arn
 }
 ```
 
-#### Risk 3: No Change Notifications
-**Issue**: Changes to SCP aren't explicitly logged/alerted.
+---
 
-**Mitigation**:
-```python
-def lambda_handler(event, context):
-    if new_services:
-        # Log all changes to CloudTrail via API calls
-        # (automatically done by organizations:UpdatePolicy)
-        
-        # Additionally, store audit trail in DynamoDB
-        audit_table.put_item(Item={
-            'timestamp': datetime.utcnow().isoformat(),
-            'action': 'scp_update',
-            'services_added': new_services,
-            'policy_id': scp_policy['id'],
-            'status': 'success'
-        })
-```
+## 9. Audit & Logging
+
+### Strengths
+- **CloudWatch Logs**: All executions logged via `logger`.
+- **CloudTrail**: All AWS API calls (DynamoDB, Organizations, SES, S3, SNS) are automatically logged.
+- **Custom Metrics**: `publish_metrics()` pushes `NewServicesDetected`, `TotalTrackedServices`, and `BaselineIntegrityStatus` to the `AWS/ServiceMonitor` CloudWatch namespace.
+- **Tamper Alert Chain**: Integrity violations trigger both email and SNS alerts, and publish a `BaselineIntegrityStatus=0` metric (usable to trigger a CloudWatch alarm).
+
+### Residual Risks
+
+#### Risk 1: print() Calls Bypass Structured Logger
+**Severity**: LOW
+
+`store_new_services()` (line 351, 354) and `get_scp_policy()` (lines 393, 402) use `print()`. These messages go to stdout and appear in CloudWatch Logs but are not associated with a log level, making them invisible to level-filtered Insights queries and potentially missing from structured log aggregation tools.
+
+**Fix**: Replace `print()` with `logger.info()` / `logger.error()` calls.
+
+#### Risk 2: Approval Audit Trail
+**Severity**: MEDIUM
+
+Pending approval records in DynamoDB track `detected_at` and `approval_requested_at` but have no field for who approved a service or when. Approval is performed out-of-band (Terraform PR merge), so the Git history is the de-facto audit trail. For environments requiring a formal audit log, add an `approved_by` and `approved_at` update to the DynamoDB record as part of the Terraform apply or a separate approval Lambda.
 
 ---
 
-## 8. Audit & Logging
+## 10. Operational Security
 
-### ✅ Strengths
-- **CloudWatch Logs**: All executions logged
-- **CloudTrail**: All API calls logged automatically
-- **Log Retention**: 14 days (configurable)
+### Strengths
+- **Approval Gate**: `REQUIRE_APPROVAL=true` (default) stores SCP changes as pending without applying them.
+- **Notifications-Only Mode**: `manage_scp_policy = false` completely disables Organizations API calls.
+- **CloudWatch Alarms**: `alarms.tf` provides metric-based alerting (baseline integrity metric usable for alarm trigger).
 
-### ⚠️ Considerations
+### Residual Risks
 
-#### Risk 1: Log Analysis
-**Issue**: No automated alerting on errors or unusual patterns.
+#### Risk 1: No Bulk-Detection Guard
+**Severity**: MEDIUM
 
-**Mitigation**:
-```bash
-# Create CloudWatch Alarm for Lambda errors
-aws cloudwatch put-metric-alarm \
-  --alarm-name aws-service-monitor-errors \
-  --metric-name Errors \
-  --namespace AWS/Lambda \
-  --dimensions Name=FunctionName,Value=aws-service-monitor \
-  --statistic Sum \
-  --period 300 \
-  --threshold 1 \
-  --comparison-operator GreaterThanOrEqualToThreshold \
-  --alarm-actions arn:aws:sns:...
-```
+If the AWS service reference returns an unusually large number of new services (e.g., 50+ in one run due to a data anomaly or reference restructuring), the system will attempt to add all of them to the SCP, send individual approval request emails for each, and write all to DynamoDB. Add a per-run cap (see Section 3, Risk 4).
 
-#### Risk 2: Log Injection
-**Issue**: Service names logged without sanitization.
+#### Risk 2: No Policy Drift Detection
+**Severity**: LOW (unchanged)
 
-**Mitigation**:
-```python
-import logging
-
-logger = logging.getLogger()
-
-def lambda_handler(event, context):
-    # Don't log user input directly
-    # This is safe - service names only contain alphanumeric + hyphens
-    logger.info(f"Processing {len(new_services)} services")  # Safe
-    logger.debug(f"Services: {', '.join(sorted(new_services))}")  # Safe
-```
+The system does not detect if someone manually modifies the SCP outside of this Lambda. CloudTrail will log `UpdatePolicy` calls; consider a CloudWatch Metric Filter on CloudTrail logs for `organizations:UpdatePolicy` events not originating from the Lambda role.
 
 ---
 
-## 9. Compliance & Governance
+## 11. Compliance & Governance
 
-### ⚠️ Considerations
+### Approval Workflow Security Properties
 
-#### Risk 1: Change Control
-**Issue**: Automated changes bypass change control processes.
+The service approval/allowlist workflow introduced in the current version has the following security properties:
 
-**Mitigation**:
-- Implement approval workflow (see section 3)
-- Document in change log
-- Notify teams of changes
-- Maintain audit trail
+1. **Separation of concerns**: New services are tracked in DynamoDB and notified via email before any SCP modification is considered.
+2. **Allowlist is code-controlled**: Approved services are defined in `terraform.tfvars` (version-controlled), not editable via the console or DynamoDB directly.
+3. **Approval is gate-controlled**: Services not in the approved list are blocked from SCP exclusion regardless of who requests it.
+4. **Audit trail via Git**: Changes to `var.approved_services` require a Terraform PR, providing an auditable approval chain.
 
-#### Risk 2: Compliance Violations
-**Issue**: If service blacklist is for compliance, auto-update could cause violations.
-
-**Mitigation**:
-- Validate against compliance requirements
-- Test policy changes in staging first
-- Have rollback procedure
-- Document compliance mapping
+**Gap**: The `track_service_for_approval()` function writes a `pending` record to DynamoDB but there is no mechanism to transition that record to `approved` via code. The approval happens out-of-band (via `terraform.tfvars`). The DynamoDB pending records are informational only and may accumulate without cleanup.
 
 ---
 
-## 10. Recommended Security Enhancements
+## 12. Priority Recommendations
 
-### Priority 1 (Critical)
-- [ ] Add HTTPS certificate validation to service reference fetch (use `requests`)
-- [ ] Implement SCP update approval workflow
-- [ ] Add service name validation
-- [ ] Validate policy syntax before updates
-- [ ] Restrict CloudWatch Logs policy to specific log group
+### Priority 1 (Critical — Fix Before Next Deployment)
+- [ ] **Fix `MANAGE_SCP_POLICY` NameError**: Add `MANAGE_SCP_POLICY = os.environ.get('MANAGE_SCP_POLICY', 'true').lower() == 'true'` to `lambda/index.py` and the corresponding env var to `main.tf`.
 
-### Priority 2 (Important)
-- [ ] Store email recipients in Secrets Manager
-- [ ] Enable DynamoDB point-in-time recovery
-- [ ] Add CloudWatch alarms for Lambda errors
-- [ ] Implement policy drift detection
-- [ ] Add audit trail table to DynamoDB
+### Priority 2 (High — Fix in Next Sprint)
+- [ ] **Pin GitHub Actions to commit SHAs**: Replace `@v1` with a full commit digest for `anthropics/claude-code-action`.
+- [ ] **Restrict `@claude` trigger to collaborators**: Add `author_association` check to `claude.yml` `if:` condition.
+- [ ] **Fix Sid-based SCP statement matching**: Use `SCP_SID` env var in `update_scp_with_services()` and `generate_scp_preview()` instead of matching on `Effect` alone.
+- [ ] **Replace `print()` with `logger` calls**: In `store_new_services()` and `get_scp_policy()`.
 
-### Priority 3 (Nice to Have)
-- [ ] Implement dry-run mode for testing
-- [ ] Add email header validation
-- [ ] Enable Lambda Provisioned Concurrency
-- [ ] Create custom metrics for SCP changes
-- [ ] Implement CloudFormation for policy management
+### Priority 3 (Important — Address Within Quarter)
+- [ ] **Add fork PR guard to `claude-code-review.yml`**: Prevent the review workflow from running on fork PRs.
+- [ ] **Add per-run service count cap**: Guard against bulk-detection anomalies from the service reference.
+- [ ] **Configure Lambda DLQ**: Capture failed invocations for investigation.
+- [ ] **Increase CloudWatch Logs retention**: From 14 days to 30–90 days for compliance.
+- [ ] **Document approval audit trail**: Formally document Git history as the approval audit record, or implement a DynamoDB `approved_by`/`approved_at` update path.
+
+### Priority 4 (Nice to Have)
+- [ ] **Store email recipients in SSM Parameter Store**: If insider-threat model requires it.
+- [ ] **Add Organizations API condition**: Restrict to specific SCP name.
+- [ ] **Add SES FromAddress condition**: Restrict to configured sender email.
+- [ ] **Add policy drift detection**: CloudWatch Metric Filter on CloudTrail for `organizations:UpdatePolicy`.
+- [ ] **Implement DLQ alarm**: Alert when the DLQ receives messages.
 
 ---
 
@@ -793,69 +463,59 @@ def lambda_handler(event, context):
 ```
 Identity & Access
 - [ ] Review all IAM policies for least privilege
-- [ ] Restrict Organizations API to specific policy name
-- [ ] Restrict CloudWatch Logs to specific log group
-- [ ] Enable CloudTrail logging
+- [ ] Verify Organizations API condition restricts to specific policy name
+- [ ] CloudWatch Logs policy scoped to specific log group (DONE)
+- [ ] Enable CloudTrail logging (organization trail recommended)
 - [ ] Audit role trust policies
 
 Data Protection
-- [ ] Enable DynamoDB point-in-time recovery
-- [ ] Set appropriate CloudWatch Logs retention (30+ days)
-- [ ] Enable encryption at rest (already default)
-- [ ] Verify email recipients in SES
-- [ ] Test email delivery
+- [ ] DynamoDB PITR enabled on both tables (DONE)
+- [ ] Set CloudWatch Logs retention >= 30 days (currently 14)
+- [ ] Encryption at rest via AWS-managed keys (DONE)
+- [ ] Verify all email recipients in SES
+- [ ] Confirm S3 baseline bucket object lock is active (DONE)
 
-Network Security
-- [ ] Verify service reference domain is reachable
-- [ ] Test HTTPS certificate validation
-- [ ] Confirm Lambda has outbound internet access
-- [ ] Review VPC configuration (if applicable)
+GitHub Actions
+- [ ] Pin claude-code-action to commit SHA
+- [ ] Add collaborator check to @claude trigger
+- [ ] Add fork PR guard to code review workflow
+
+Lambda Code
+- [ ] Fix MANAGE_SCP_POLICY NameError (CRITICAL)
+- [ ] Fix SCP Sid-based statement targeting
+- [ ] Replace print() with logger in store_new_services() and get_scp_policy()
+- [ ] Verify HTTPS certificate validation active (DONE)
+- [ ] Review service name validation logic (DONE)
 
 Service Control Policy
 - [ ] Test SCP updates in staging/non-prod first
-- [ ] Document approved services vs blacklisted
-- [ ] Create rollback procedure
-- [ ] Set up approval workflow
-- [ ] Validate policy syntax
+- [ ] Verify REQUIRE_APPROVAL=true for production
+- [ ] Confirm manage_scp_policy setting matches intent
+- [ ] Validate SCP Sid matches scp_sid variable
+
+Approval Workflow
+- [ ] Confirm approved_services list is correct in terraform.tfvars
+- [ ] Verify APPROVAL_RECIPIENTS are SES-verified
+- [ ] Document approval process and audit trail expectations
+- [ ] Review pending records in approved-services DynamoDB table
 
 Operational
-- [ ] Set up CloudWatch alarms for errors
-- [ ] Configure SNS topic for alerts
-- [ ] Document runbook for failures
-- [ ] Test manual Lambda invocation
-- [ ] Verify log group exists and has retention
-
-Lambda
-- [ ] Review code for injection vulnerabilities
-- [ ] Set appropriate timeout (300s seems reasonable)
-- [ ] Configure DLQ for failed invocations
-- [ ] Test error handling paths
-- [ ] Load test for scaling
-
-Monitoring
-- [ ] Set up dashboard for key metrics
-- [ ] Create alert for policy drift
-- [ ] Enable CloudTrail organization trail
-- [ ] Set up SNS notifications
-- [ ] Document on-call procedures
-
-Governance
-- [ ] Document change control process
-- [ ] Get approval for automated changes
-- [ ] Define rollback procedures
-- [ ] Set audit retention policies
-- [ ] Train team on system operation
+- [ ] Set up CloudWatch alarm on BaselineIntegrityStatus metric
+- [ ] Configure SNS topic subscriptions for alerts
+- [ ] Test tamper detection end-to-end (see TESTING_GUIDE.md)
+- [ ] Verify Lambda DLQ (not yet configured — see Priority 3)
+- [ ] Document runbook for NameError recovery (if fix not yet deployed)
 ```
 
 ---
 
 ## Conclusion
 
-The solution is generally secure with proper AWS-managed service usage and IAM controls. Main concerns are:
+The solution has matured significantly since the initial review. All Priority 1 items from the previous version are now implemented. The key remaining concerns are:
 
-1. **Automated SCP updates** - Add approval workflow
-2. **External service reference** - Add HTTPS validation
-3. **No policy drift detection** - Add monitoring
-4. **Limited audit trail** - Add DynamoDB audit table
+1. **`MANAGE_SCP_POLICY` NameError** — A code defect that will crash the Lambda on any run that detects new services. Must be fixed immediately.
+2. **GitHub Actions action pinning** — Both workflows use mutable `@v1` tags for a third-party action that has access to an Anthropic API secret.
+3. **SCP Sid targeting** — The `SCP_SID` variable is defined but not used in the statement selection logic, potentially causing the wrong statement to be modified in multi-statement policies.
+4. **Approval audit trail** — Pending records in DynamoDB have no completion path; the approval audit trail relies entirely on Git history.
 
-All risks are mitigatable with the recommendations above. For production use, strongly recommend implementing Priority 1 enhancements and establishing an approval workflow for SCP updates.
+All other risks are low-severity or acknowledged AWS service limitations.
