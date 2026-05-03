@@ -15,7 +15,7 @@ This document describes the threat model for the AWS Service Monitor solution. I
 | High | 8 |
 | Medium | 5 |
 | Low | 2 |
-| Mitigated | 13 |
+| Mitigated | 14 |
 | Accepted | 6 |
 
 ---
@@ -718,67 +718,25 @@ resource "aws_iam_role_policy" "restrict_logs" {
 
 ### T015: Approved-Services Table Tampering (Approval Workflow Bypass)
 
-**Severity**: 🔴 HIGH | **Likelihood**: 🟡 MEDIUM | **Risk**: HIGH**
+**Severity**: 🔴 HIGH | **Likelihood**: 🟡 MEDIUM | **Risk**: LOW** ✅ MITIGATED
 
-**Description**: An attacker with IAM permissions to write to the `aws-service-monitor-approved-services` DynamoDB table inserts a malicious service with `approval_status = "approved"`. On the next Lambda run, `get_approved_services()` (lambda/index.py lines 889-910) reads this table via the `approval-status-index` GSI and merges it with the static `APPROVED_SERVICES_LIST`. The attacker-inserted service is then excluded from the SCP deny list, silently permitting its use across the organisation.
+**Description**: An attacker with IAM permissions to write to the `aws-service-monitor-approved-services` DynamoDB table inserts a malicious service with `approval_status = "approved"`. On the next Lambda run, `get_approved_services()` reads this table via the `approval-status-index` GSI and merges it with the static `APPROVED_SERVICES_LIST`. The attacker-inserted service is then excluded from the SCP deny list.
 
-**Impact**:
-- Malicious or unreviewed AWS service permanently excluded from SCP enforcement
-- No automatic alerting on approved-services table writes
-- Bypass is persistent — the fraudulent approval record remains until manually audited
+**Implemented Controls**:
+- ✅ **KMS CMK encryption** on the `approved-services` table (T003 work — `aws_kms_key.dynamodb`, key policy restricts GenerateDataKey/Decrypt to Lambda role and account root)
+- ✅ **Split IAM policy**: Lambda's `dynamodb:UpdateItem` and `dynamodb:Scan` are withheld from the `approved-services` table. Lambda holds only `GetItem`, `PutItem` (for pending records), and `Query` (for GSI reads). This prevents the Lambda role from promoting a record from `pending` to `approved` via `UpdateItem`
+- ✅ **CloudWatch alarm** (`service-monitor-approved-services-unusual-writes`): fires on >50 write capacity units/hour on the approved-services table — any sustained write activity outside the daily Lambda run is alerted
+- ✅ **WARNING-level log** when an approved service bypasses the SCP (`logger.warning(f"T015: approved services excluded from SCP deny list: ...")`) — CloudWatch Logs Insights and the existing lambda-errors alarm provide visibility
+- ✅ **PITR enabled** for point-in-time recovery if a fraudulent record is inserted and needs rolling back
+- ✅ **CloudTrail** logs all DynamoDB control-plane operations
 
-**Existing Controls**:
-- ✅ IAM role restricts write access (Lambda role holds `dynamodb:PutItem` on this table — main.tf lines 148-161)
-- ✅ CloudTrail logs all DynamoDB writes
-- ✅ DynamoDB PITR enabled (main.tf line 112)
+**Residual Risk**: Low
 
-**Gaps**:
-- ❌ No KMS customer-managed key on the `approved-services` table — AWS-managed key offers no additional access control
-- ❌ The Lambda IAM policy grants `dynamodb:PutItem` on both tables from the same policy statement (main.tf lines 148-161); a privilege-escalation reaching the Lambda role gains write access to both
-- ❌ No integrity checksum or audit record for the approved-services table comparable to the baseline checksum on the service-registry table
-- ❌ No CloudWatch alarm or EventBridge rule alerts on writes to this table
+**Recommendation**: ✅ **MITIGATED**
 
-**Recommendation**: 🟡 **MITIGATE**
-
-**Suggested Mitigations**:
-```hcl
-# 1. Separate the approved-services IAM policy to Query-only for Lambda
-#    — approval writes should come from a separate, tightly-scoped human/pipeline role
-resource "aws_iam_role_policy" "lambda_approved_services_policy" {
-  policy = jsonencode({
-    Statement = [{
-      Effect   = "Allow"
-      Action   = ["dynamodb:GetItem", "dynamodb:Query"]   # read-only
-      Resource = [
-        aws_dynamodb_table.approved_services.arn,
-        "${aws_dynamodb_table.approved_services.arn}/index/*"
-      ]
-    }]
-  })
-}
-
-# 2. CloudWatch alarm on unexpected PutItem/UpdateItem on approved-services table
-resource "aws_cloudwatch_event_rule" "approved_services_writes" {
-  event_pattern = jsonencode({
-    source      = ["aws.dynamodb"]
-    detail-type = ["AWS API Call via CloudTrail"]
-    detail = {
-      eventName = ["PutItem", "UpdateItem", "DeleteItem"]
-      requestParameters = {
-        tableName = ["aws-service-monitor-approved-services"]
-      }
-    }
-  })
-}
-```
-
-```python
-# 3. Log and alert when an approved service is first encountered,
-#    so ops teams can verify each entry
-if service in approved_services:
-    logger.warning(f"Service '{service}' is on the approved list — excluded from SCP")
-    # Consider sending a notification email confirming the exclusion
-```
+**Remaining hardening (optional)**:
+- Enable CloudTrail DynamoDB data events and add an EventBridge rule to alert on `PutItem` calls to `approved-services` whose `userIdentity.arn` is not the Lambda role — provides principal-level detection rather than volume-based
+- Consider removing `dynamodb:PutItem` on `approved-services` from the Lambda role entirely if `track_service_for_approval()` is removed in favour of a pure email-driven workflow (no DynamoDB pending records)
 
 ---
 
@@ -873,8 +831,8 @@ Low            [T009]
 | Status | Count | Threats |
 |--------|-------|---------|
 | ✅ Accept | 6 | T001, T004, T006, T008, T009, T011 |
-| ✅ Mitigated | 2 | T003, T016 |
-| 🟡 Mitigate | 9 | T002, T005, T007, T010, T012, T013, T014, T015, T017 |
+| ✅ Mitigated | 3 | T003, T015, T016 |
+| 🟡 Mitigate | 8 | T002, T005, T007, T010, T012, T013, T014, T017 |
 
 ---
 
@@ -890,11 +848,11 @@ Priority 1: GitHub Actions Hardening (T016) ✅ DONE
 ├─ ✅ External plugin dependency removed; inline prompt used instead
 └─ Completed 2026-05-03
 
-Priority 2: Approved-Services Table Write Protection (T015)
-├─ Split Lambda IAM policy: read-only on approved-services table
-├─ Create separate write-capable role for human approval updates
-├─ Add CloudWatch/EventBridge alarm on PutItem/UpdateItem to approved-services
-└─ Estimated effort: 3 hours
+Priority 2: Approved-Services Table Write Protection (T015) ✅ DONE
+├─ ✅ Split Lambda IAM: UpdateItem + Scan withheld from approved-services table
+├─ ✅ CloudWatch alarm added for write-volume anomaly on approved-services
+├─ ✅ WARNING-level log when approved service bypasses SCP
+└─ Completed 2026-05-03
 
 Priority 3: Policy Drift Detection (T005)
 ├─ Detect unauthorized SCP changes

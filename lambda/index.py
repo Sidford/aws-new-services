@@ -1098,7 +1098,7 @@ def lambda_handler(event, context):
             services_for_scp = [s for s in new_services_list if s not in approved_services]
 
             if approved_from_new:
-                logger.info(f"New services already approved (excluded from SCP): {approved_from_new}")
+                logger.warning(f"T015: approved services excluded from SCP deny list: {approved_from_new} — verify these approvals are legitimate")
 
             # Send approval request emails for unapproved services
             if services_for_scp and ENABLE_SERVICE_APPROVAL_WORKFLOW:

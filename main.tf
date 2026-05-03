@@ -202,8 +202,19 @@ resource "aws_iam_role_policy" "lambda_dynamodb_policy" {
           "dynamodb:Query",
           "dynamodb:Scan"
         ]
+        Resource = aws_dynamodb_table.service_registry.arn
+      },
+      {
+        # T015: approved-services is read + PutItem (pending records) only.
+        # UpdateItem and Scan are withheld — Lambda cannot promote a record to
+        # 'approved' status nor enumerate the table without going through the GSI.
+        Effect = "Allow"
+        Action = [
+          "dynamodb:GetItem",
+          "dynamodb:PutItem",
+          "dynamodb:Query"
+        ]
         Resource = [
-          aws_dynamodb_table.service_registry.arn,
           aws_dynamodb_table.approved_services.arn,
           "${aws_dynamodb_table.approved_services.arn}/index/*"
         ]

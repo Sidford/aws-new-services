@@ -167,6 +167,29 @@ resource "aws_cloudwatch_metric_alarm" "dynamodb_unusual_writes" {
   tags = var.tags
 }
 
+# Approved-Services Table Write Anomaly - T015 mitigation
+# Any write to this table outside the daily Lambda window is suspicious —
+# legitimate approvals flow via terraform.tfvars, not direct DynamoDB writes.
+resource "aws_cloudwatch_metric_alarm" "approved_services_unusual_writes" {
+  alarm_name          = "service-monitor-approved-services-unusual-writes"
+  comparison_operator = "GreaterThanThreshold"
+  evaluation_periods  = "1"
+  metric_name         = "ConsumedWriteCapacityUnits"
+  namespace           = "AWS/DynamoDB"
+  period              = "3600"
+  statistic           = "Sum"
+  threshold           = "50"
+  alarm_description   = "Unexpected writes to approved-services table — possible approval workflow bypass attempt (T015)"
+  alarm_actions       = [aws_sns_topic.alerts.arn]
+  treat_missing_data  = "notBreaching"
+
+  dimensions = {
+    TableName = aws_dynamodb_table.approved_services.name
+  }
+
+  tags = var.tags
+}
+
 # EventBridge Rule State - CRITICAL
 resource "aws_cloudwatch_metric_alarm" "eventbridge_rule_disabled" {
   alarm_name          = "service-monitor-eventbridge-rule-disabled"
