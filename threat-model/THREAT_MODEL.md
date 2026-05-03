@@ -15,7 +15,7 @@ This document describes the threat model for the AWS Service Monitor solution. I
 | High | 8 |
 | Medium | 5 |
 | Low | 2 |
-| Mitigated | 14 |
+| Mitigated | 15 |
 | Accepted | 6 |
 
 ---
@@ -231,7 +231,7 @@ if not update_baseline_checksum(all_services):
 
 ### T005: Unauthorized SCP Policy Modification
 
-**Severity**: 🔴 CRITICAL | **Likelihood**: 🟡 MEDIUM | **Risk**: HIGH**
+**Severity**: 🔴 CRITICAL | **Likelihood**: 🟡 MEDIUM | **Risk**: LOW** ✅ MITIGATED
 
 **Description**: Attacker modifies SCP policy directly, bypassing monitoring and approval workflow.
 
@@ -241,55 +241,20 @@ if not update_baseline_checksum(all_services):
 - Security controls circumvented
 - Unauthorized services accessible
 
-**Existing Controls**:
-- ✅ IAM permissions restricted
-- ✅ CloudTrail logging
-- ✅ Approval workflow
+**Implemented Controls**:
+- ✅ **IAM scoped to SCP type only**: `lambda_scp_policy` now restricts all three Organizations actions (`ListPolicies`, `DescribePolicy`, `UpdatePolicy`) with `Condition: StringEquals: organizations:PolicyType: SERVICE_CONTROL_POLICY`. `UpdatePolicy` and `DescribePolicy` are further scoped to `arn:aws:organizations::ACCOUNT_ID:policy/p-*` — Lambda cannot touch any other policy type or resource type in Organizations
+- ✅ **EventBridge rule in us-east-1** (`aws-service-monitor-scp-changes`): matches on `aws.organizations` source with `eventName` in `[UpdatePolicy, DeletePolicy, CreatePolicy, AttachPolicy, DetachPolicy]`. Organizations CloudTrail events are only emitted in us-east-1; a dedicated provider alias is used to deploy this rule in that region
+- ✅ **SNS topic + email subscriptions in us-east-1** (`aws-service-monitor-scp-change-alerts`): alert emails sent to all `email_recipients` on any SCP event, regardless of whether the change was made by the Lambda or directly by a human/attacker
+- ✅ **CloudTrail logging** (organisation-level — always-on management events)
+- ✅ **Approval workflow** — Lambda requires `REQUIRE_APPROVAL=true` before writing SCP changes
 
-**Residual Risk**: Medium
+**Residual Risk**: Low
 
-**Recommendation**: 🟡 **MITIGATE**
+**Recommendation**: ✅ **MITIGATED**
 
-**Suggested Mitigations**:
-```hcl
-# Restrict organizations:UpdatePolicy permission
-resource "aws_iam_role_policy" "lambda_scp" {
-  policy = jsonencode({
-    Statement = [{
-      Effect = "Allow"
-      Action = "organizations:UpdatePolicy"
-      Resource = "arn:aws:organizations::*:policy/o-*/service_control_policy/p-*"
-      Condition = {
-        StringEquals = {
-          "organizations:PolicyName" = "blacklist"  # Only this policy
-        }
-      }
-    }]
-  })
-}
-
-# Require MFA for policy changes
-resource "aws_organizations_policy" "require_mfa" {
-  # Policy requiring MFA for organizations:UpdatePolicy
-}
-```
-
-**Additional Detection**:
-```hcl
-# CloudWatch alarm for unauthorized SCP changes
-resource "aws_cloudwatch_event_rule" "scp_changes" {
-  event_pattern = jsonencode({
-    source      = ["aws.organizations"]
-    detail-type = ["AWS API Call via CloudTrail"]
-    detail = {
-      eventName = ["UpdatePolicy"]
-      requestParameters = {
-        policyId = ["p-xxxxx"]
-      }
-    }
-  })
-}
-```
+**Remaining hardening (optional)**:
+- Scope `UpdatePolicy` resource further to the specific policy ID (requires importing the SCP into Terraform state or using a data source to look up the policy ID at plan time)
+- Add SCPs at the organisation root to prevent non-Lambda principals from calling `organizations:UpdatePolicy` on the blacklist policy
 
 ---
 
@@ -831,8 +796,8 @@ Low            [T009]
 | Status | Count | Threats |
 |--------|-------|---------|
 | ✅ Accept | 6 | T001, T004, T006, T008, T009, T011 |
-| ✅ Mitigated | 3 | T003, T015, T016 |
-| 🟡 Mitigate | 8 | T002, T005, T007, T010, T012, T013, T014, T017 |
+| ✅ Mitigated | 4 | T003, T005, T015, T016 |
+| 🟡 Mitigate | 7 | T002, T007, T010, T012, T013, T014, T017 |
 
 ---
 
@@ -854,10 +819,11 @@ Priority 2: Approved-Services Table Write Protection (T015) ✅ DONE
 ├─ ✅ WARNING-level log when approved service bypasses SCP
 └─ Completed 2026-05-03
 
-Priority 3: Policy Drift Detection (T005)
-├─ Detect unauthorized SCP changes
-├─ Send alerts via SNS
-└─ Estimated effort: 4 hours
+Priority 3: Policy Drift Detection (T005) ✅ DONE
+├─ ✅ organizations:UpdatePolicy IAM scoped to SCP type + policy ARN pattern
+├─ ✅ EventBridge rule in us-east-1 detects all SCP modification events
+├─ ✅ SNS topic + email subscriptions in us-east-1 for immediate alerting
+└─ Completed 2026-05-03
 
 Priority 4: KMS Encryption (T015)
 ├─ ✅ DONE (T003): CMK applied to both DynamoDB tables, Lambda KMS policy added, anomaly alarm deployed

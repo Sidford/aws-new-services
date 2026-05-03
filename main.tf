@@ -223,7 +223,7 @@ resource "aws_iam_role_policy" "lambda_dynamodb_policy" {
   })
 }
 
-# IAM policy for Lambda to access Organizations and SCP
+# IAM policy for Lambda to access Organizations and SCP (T005 mitigation)
 resource "aws_iam_role_policy" "lambda_scp_policy" {
   name = "lambda-scp-policy"
   role = aws_iam_role.lambda_role.id
@@ -232,16 +232,87 @@ resource "aws_iam_role_policy" "lambda_scp_policy" {
     Version = "2012-10-17"
     Statement = [
       {
-        Effect = "Allow"
-        Action = [
-          "organizations:ListPolicies",
-          "organizations:DescribePolicy",
-          "organizations:UpdatePolicy"
-        ]
+        Effect   = "Allow"
+        Action   = ["organizations:ListPolicies"]
         Resource = "*"
+        Condition = {
+          StringEquals = {
+            "organizations:PolicyType" = "SERVICE_CONTROL_POLICY"
+          }
+        }
+      },
+      {
+        Effect   = "Allow"
+        Action   = ["organizations:DescribePolicy", "organizations:UpdatePolicy"]
+        Resource = "arn:aws:organizations::${data.aws_caller_identity.current.account_id}:policy/p-*"
+        Condition = {
+          StringEquals = {
+            "organizations:PolicyType" = "SERVICE_CONTROL_POLICY"
+          }
+        }
       }
     ]
   })
+}
+
+# T005: SNS topic in us-east-1 for SCP change alerts (Organizations CloudTrail
+# events are only available in us-east-1 EventBridge).
+resource "aws_sns_topic" "scp_change_alerts" {
+  provider = aws.us_east_1
+  name     = "aws-service-monitor-scp-change-alerts"
+  tags     = var.tags
+}
+
+resource "aws_sns_topic_subscription" "scp_change_alert_emails" {
+  provider  = aws.us_east_1
+  count     = length(var.email_recipients)
+  topic_arn = aws_sns_topic.scp_change_alerts.arn
+  protocol  = "email"
+  endpoint  = var.email_recipients[count.index]
+}
+
+resource "aws_sns_topic_policy" "scp_change_alerts" {
+  provider = aws.us_east_1
+  arn      = aws_sns_topic.scp_change_alerts.arn
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Sid    = "AllowEventBridgePublish"
+        Effect = "Allow"
+        Principal = {
+          Service = "events.amazonaws.com"
+        }
+        Action   = "sns:Publish"
+        Resource = aws_sns_topic.scp_change_alerts.arn
+      }
+    ]
+  })
+}
+
+# EventBridge rule in us-east-1 to detect any SCP policy modification
+resource "aws_cloudwatch_event_rule" "scp_changes" {
+  provider    = aws.us_east_1
+  name        = "aws-service-monitor-scp-changes"
+  description = "Alert on any direct SCP policy modification outside the Lambda workflow (T005)"
+
+  event_pattern = jsonencode({
+    source      = ["aws.organizations"]
+    detail-type = ["AWS API Call via CloudTrail"]
+    detail = {
+      eventName = ["UpdatePolicy", "DeletePolicy", "CreatePolicy", "AttachPolicy", "DetachPolicy"]
+    }
+  })
+
+  tags = var.tags
+}
+
+resource "aws_cloudwatch_event_target" "scp_changes_sns" {
+  provider  = aws.us_east_1
+  rule      = aws_cloudwatch_event_rule.scp_changes.name
+  target_id = "scp-change-sns-alert"
+  arn       = aws_sns_topic.scp_change_alerts.arn
 }
 
 # IAM policy for Lambda to write baseline snapshots to S3 (T004 mitigation)
