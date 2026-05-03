@@ -15,7 +15,7 @@ This document describes the threat model for the AWS Service Monitor solution. I
 | High | 8 |
 | Medium | 5 |
 | Low | 2 |
-| Mitigated | 15 |
+| Mitigated | 16 |
 | Accepted | 6 |
 
 ---
@@ -570,7 +570,7 @@ resource "aws_cloudwatch_event_rule" "eventbridge_changes" {
 
 ### T013: CloudWatch Log Tampering
 
-**Severity**: 🔴 HIGH | **Likelihood**: 🟢 LOW | **Risk**: MEDIUM**
+**Severity**: 🔴 HIGH | **Likelihood**: 🟢 LOW | **Risk**: LOW** ✅ MITIGATED (LZA)
 
 **Description**: Attacker deletes CloudWatch logs to hide evidence of activities.
 
@@ -582,45 +582,20 @@ resource "aws_cloudwatch_event_rule" "eventbridge_changes" {
 **Existing Controls**:
 - ✅ IAM permissions
 - ✅ CloudTrail logging
-- ✅ Log retention policy
+- ✅ Log retention policy (14 days on `/aws/lambda/aws-service-monitor`)
+
+**LZA-Provided Controls** *(this workload is deployed into an AWS Landing Zone Accelerator managed landing zone)*:
+- ✅ **Centralised CloudWatch Logs export**: LZA configures organisation-wide CloudWatch Logs export to a centralised, dedicated logging account S3 bucket via subscription filters or Kinesis Data Firehose — logs are replicated out of the workload account before they can be deleted
+- ✅ **S3 Object Lock on the logging bucket**: the LZA logging account S3 bucket uses Object Lock (COMPLIANCE or GOVERNANCE mode) providing WORM immutability — exported logs cannot be deleted even by the logging account root user within the retention window
+- ✅ **Logging account isolation**: the centralised log archive lives in a separate AWS account with restricted access, meaning an attacker who compromises the workload account cannot delete the exported log copies
+- ✅ **CloudTrail organisation trail**: LZA deploys an organisation-level CloudTrail trail writing to the same immutable logging account — any `DeleteLogGroup` or `DeleteLogStream` API call is itself recorded and preserved
+- ✅ **SCPs on the logging account**: LZA applies SCPs preventing logging account members from disabling CloudTrail or deleting S3 objects in the log archive bucket
 
 **Residual Risk**: Low
 
-**Recommendation**: 🟡 **MITIGATE**
+**Recommendation**: ✅ **MITIGATED** (by LZA platform controls — no application-level changes required)
 
-**Suggested Mitigations**:
-```hcl
-# Export logs to S3 for immutable storage
-resource "aws_kinesis_firehose_delivery_stream" "logs_to_s3" {
-  name        = "service-monitor-logs"
-  destination = "extended_s3"
-  
-  extended_s3_configuration {
-    role_arn   = aws_iam_role.firehose.arn
-    bucket_arn = aws_s3_bucket.logs.arn
-    
-    # Enable S3 Object Lock for immutability
-    cloudwatch_logging_options {
-      enabled         = true
-      log_group_name  = aws_cloudwatch_log_group.logs.name
-    }
-  }
-}
-
-# Restrict log deletion
-resource "aws_iam_role_policy" "restrict_log_deletion" {
-  policy = jsonencode({
-    Statement = [{
-      Effect = "Deny"
-      Action = [
-        "logs:DeleteLogGroup",
-        "logs:DeleteLogStream"
-      ]
-      Resource = "*"
-    }]
-  })
-}
-```
+**Note for non-LZA deployments**: If this workload is deployed outside an LZA landing zone, implement the Kinesis Firehose log export and S3 Object Lock pattern from the original suggested mitigations above, or use the AWS-native CloudWatch Logs subscription filter to export to an immutable S3 bucket in a separate logging account.
 
 ---
 
@@ -796,8 +771,8 @@ Low            [T009]
 | Status | Count | Threats |
 |--------|-------|---------|
 | ✅ Accept | 6 | T001, T004, T006, T008, T009, T011 |
-| ✅ Mitigated | 4 | T003, T005, T015, T016 |
-| 🟡 Mitigate | 7 | T002, T007, T010, T012, T013, T014, T017 |
+| ✅ Mitigated | 5 | T003, T005, T013, T015, T016 |
+| 🟡 Mitigate | 6 | T002, T007, T010, T012, T014, T017 |
 
 ---
 
@@ -844,10 +819,10 @@ Priority 2: Approved-Services Fallback Alerting (T017)
 ├─ Log warning with operator instructions
 └─ Estimated effort: 1 hour
 
-Priority 3: Log Export to S3 (T013)
-├─ Set up Kinesis Firehose
-├─ S3 Object Lock for immutability
-└─ Estimated effort: 3 hours
+Priority 3: Log Export to S3 (T013) ✅ MITIGATED (LZA)
+├─ ✅ Centralised log export, S3 Object Lock, and logging account isolation
+│   provided by the AWS Landing Zone Accelerator platform
+└─ No application-level changes required in LZA deployments
 
 Priority 4: EventBridge Monitoring (T012)
 ├─ Alert on rule modifications
