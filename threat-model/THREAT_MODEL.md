@@ -19,7 +19,7 @@ This document describes the threat model for the AWS Service Monitor solution. I
 | Accepted | 6 |
 
 ```mermaid
-%%{init: {'theme': 'dark'}}%%
+%%{init: {'theme': 'dark', 'themeVariables': {'primaryColor': '#1a1a1a', 'primaryBorderColor': '#333333', 'background': '#000000', 'mainBkg': '#000000', 'secondBkg': '#1a1a1a', 'tertiaryBkg': '#2a2a2a'}}}%%
 pie title Threat Disposition (17 total)
     "Accepted" : 6
     "Mitigated" : 5
@@ -46,7 +46,7 @@ pie title Threat Disposition (17 total)
 ### Trust Boundaries
 
 ```mermaid
-%%{init: {'theme': 'dark'}}%%
+%%{init: {'theme': 'dark', 'themeVariables': {'primaryColor': '#1a1a1a', 'primaryBorderColor': '#333333', 'background': '#000000', 'mainBkg': '#000000', 'secondBkg': '#1a1a1a', 'tertiaryBkg': '#2a2a2a'}}}%%
 flowchart TD
     EB["EventBridge\n(daily schedule)"]:::external
     GHA["GitHub Actions\n(deploy only)"]:::gha
@@ -749,7 +749,7 @@ subject = f"[Approval-{request_id}] AWS Service Monitor: Approval Request for '{
 ### Risk Matrix
 
 ```mermaid
-%%{init: {'theme': 'dark'}}%%
+%%{init: {'theme': 'dark', 'themeVariables': {'primaryColor': '#1a1a1a', 'primaryBorderColor': '#333333', 'background': '#000000', 'mainBkg': '#000000', 'secondBkg': '#1a1a1a', 'tertiaryBkg': '#2a2a2a'}}}%%
 quadrantChart
     title Risk Matrix — Likelihood vs Severity
     x-axis Low Likelihood --> High Likelihood
@@ -790,7 +790,7 @@ quadrantChart
 ## Implementation Roadmap
 
 ```mermaid
-%%{init: {'theme': 'dark'}}%%
+%%{init: {'theme': 'dark', 'themeVariables': {'primaryColor': '#1a1a1a', 'primaryBorderColor': '#333333', 'background': '#000000', 'mainBkg': '#000000', 'secondBkg': '#1a1a1a', 'tertiaryBkg': '#2a2a2a'}}}%%
 timeline
     title Implementation Roadmap
     section Phase 1 — Critical ✅ Complete
