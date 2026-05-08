@@ -32,7 +32,7 @@ ENABLE_SERVICE_APPROVAL_WORKFLOW = os.environ.get('ENABLE_SERVICE_APPROVAL_WORKF
 APPROVED_SERVICES_LIST = json.loads(os.environ.get('APPROVED_SERVICES_LIST', '[]'))
 APPROVAL_RECIPIENTS = json.loads(os.environ.get('APPROVAL_RECIPIENTS', '[]'))
 
-SERVICE_REFERENCE_URL = "https://servicereference.eu-west-2.amazonaws.com/"
+SERVICE_REFERENCE_URL = "https://servicereference.us-east-1.amazonaws.com/"
 SERVICE_NAME_PATTERN = re.compile(r'^[a-z0-9\-]+$')
 MAX_SERVICE_NAME_LENGTH = 30
 BASELINE_MARKER = "__baseline_initialized__"
