@@ -1,5 +1,6 @@
 import json
 import os
+import html
 import boto3
 import requests
 import logging
@@ -20,6 +21,7 @@ cloudwatch = boto3.client('cloudwatch')
 sns = boto3.client('sns')
 
 DYNAMODB_TABLE = os.environ['DYNAMODB_TABLE']
+APPROVED_SERVICES_TABLE = os.environ.get('APPROVED_SERVICES_TABLE', '')
 SCP_NAME = os.environ['SCP_NAME']
 EMAIL_RECIPIENTS = json.loads(os.environ['EMAIL_RECIPIENTS'])
 SENDER_EMAIL = os.environ['SENDER_EMAIL']
@@ -27,7 +29,6 @@ REQUIRE_APPROVAL = os.environ.get('REQUIRE_APPROVAL', 'true').lower() == 'true'
 MANAGE_SCP_POLICY = os.environ.get('MANAGE_SCP_POLICY', 'true').lower() == 'true'
 BASELINE_SNAPSHOT_BUCKET = os.environ.get('BASELINE_SNAPSHOT_BUCKET', '')
 ALERT_TOPIC_ARN = os.environ.get('ALERT_TOPIC_ARN', '')
-APPROVED_SERVICES_TABLE = os.environ.get('APPROVED_SERVICES_TABLE', '')
 ENABLE_SERVICE_APPROVAL_WORKFLOW = os.environ.get('ENABLE_SERVICE_APPROVAL_WORKFLOW', 'true').lower() == 'true'
 APPROVED_SERVICES_LIST = json.loads(os.environ.get('APPROVED_SERVICES_LIST', '[]'))
 APPROVAL_RECIPIENTS = json.loads(os.environ.get('APPROVAL_RECIPIENTS', '[]'))
@@ -890,7 +891,11 @@ Scan Time: {timestamp}
 
 
 def get_approved_services() -> Set[str]:
+<<<<<<< HEAD
     """Get list of approved services from configuration and DynamoDB."""
+=======
+    """Get list of approved services from DynamoDB and configuration."""
+>>>>>>> origin/feature/service-approval
     approved = set(APPROVED_SERVICES_LIST)
 
     if not APPROVED_SERVICES_TABLE:
@@ -904,16 +909,28 @@ def get_approved_services() -> Set[str]:
             KeyConditionExpression='approval_status = :status',
             ExpressionAttributeValues={':status': 'approved'}
         )
+<<<<<<< HEAD
         for item in response.get('Items', []):
             approved.add(item['service_name'])
+=======
+
+        for item in response.get('Items', []):
+            approved.add(item['service_name'])
+
+>>>>>>> origin/feature/service-approval
         logger.info(f"Loaded {len(approved)} approved services (config + DynamoDB)")
         return approved
     except Exception as e:
         logger.warning(f"Failed to load approved services from DynamoDB: {str(e)}")
+<<<<<<< HEAD
+=======
+        logger.info(f"Using {len(approved)} pre-configured approved services")
+>>>>>>> origin/feature/service-approval
         return approved
 
 
 def track_service_for_approval(service_name: str, timestamp: str) -> bool:
+<<<<<<< HEAD
     """Record a new service as pending approval in DynamoDB."""
     if not APPROVED_SERVICES_TABLE or not ENABLE_SERVICE_APPROVAL_WORKFLOW:
         return True
@@ -927,6 +944,24 @@ def track_service_for_approval(service_name: str, timestamp: str) -> bool:
             'approved_by': None,
             'approved_at': None
         })
+=======
+    """Track a new service as pending approval in DynamoDB."""
+    if not APPROVED_SERVICES_TABLE or not ENABLE_SERVICE_APPROVAL_WORKFLOW:
+        return True
+
+    try:
+        table = dynamodb.Table(APPROVED_SERVICES_TABLE)
+        table.put_item(
+            Item={
+                'service_name': service_name,
+                'approval_status': 'pending',
+                'detected_at': timestamp,
+                'approval_requested_at': timestamp,
+                'approved_by': None,
+                'approved_at': None
+            }
+        )
+>>>>>>> origin/feature/service-approval
         logger.info(f"Tracked service '{service_name}' for approval")
         return True
     except Exception as e:
@@ -936,6 +971,7 @@ def track_service_for_approval(service_name: str, timestamp: str) -> bool:
 
 def send_approval_request_email(service_name: str, timestamp: str) -> bool:
     """Send approval request email for a new blacklisted service."""
+<<<<<<< HEAD
     if not ENABLE_SERVICE_APPROVAL_WORKFLOW or not APPROVAL_RECIPIENTS:
         return True
     try:
@@ -977,10 +1013,107 @@ To approve, add to terraform.tfvars:
   approved_services = ["{service_name}"]
 
 Then run: terraform apply
+=======
+    if not ENABLE_SERVICE_APPROVAL_WORKFLOW:
+        return True
+
+    # Validate that approval recipients are configured
+    approval_recipients = APPROVAL_RECIPIENTS if APPROVAL_RECIPIENTS else EMAIL_RECIPIENTS
+    if not approval_recipients:
+        logger.warning("No approval recipients configured, skipping approval email")
+        return True
+
+    try:
+        subject = f"AWS Service Monitor: Approval Request for '{service_name}'"
+
+        html_body = f"""
+<html>
+<head></head>
+<body style="font-family: Arial, sans-serif; color: #333;">
+    <h2>Service Approval Request</h2>
+    <p>A new AWS service has been detected and added to the blacklist SCP.</p>
+
+    <div style="background-color: #f5f5f5; padding: 15px; border-radius: 5px; margin: 20px 0;">
+        <h3 style="margin-top: 0;">Service Details</h3>
+        <table style="width: 100%; border-collapse: collapse;">
+            <tr>
+                <td style="padding: 8px; font-weight: bold; width: 150px;">Service Name:</td>
+                <td style="padding: 8px;">{html.escape(service_name)}</td>
+            </tr>
+            <tr>
+                <td style="padding: 8px; font-weight: bold;">Detected At:</td>
+                <td style="padding: 8px;">{timestamp}</td>
+            </tr>
+            <tr>
+                <td style="padding: 8px; font-weight: bold;">Status:</td>
+                <td style="padding: 8px; color: #d9534f;">Pending Approval</td>
+            </tr>
+        </table>
+    </div>
+
+    <h3>What This Means</h3>
+    <p>This service is currently blocked by the SCP. You can approve it to move it to the allowlist.</p>
+
+    <h3>Next Steps</h3>
+    <ol>
+        <li>Review the service: <strong>{html.escape(service_name)}</strong></li>
+        <li>Determine if this service should be approved for use in your organization</li>
+        <li>Update the <code>approved_services</code> list in <code>terraform.tfvars</code> to include this service</li>
+        <li>Run <code>terraform apply</code> to apply the approval</li>
+        <li>The service will be excluded from the SCP deny list on the next monitor run</li>
+    </ol>
+
+    <h3>Quick Reference</h3>
+    <p>To approve this service, add it to your terraform configuration:</p>
+    <pre style="background-color: #f5f5f5; padding: 10px; border-radius: 3px; overflow-x: auto;">
+approved_services = [
+  "{html.escape(service_name)}"
+]</pre>
+
+    <hr style="border: none; border-top: 1px solid #ddd; margin: 20px 0;">
+    <p style="color: #999; font-size: 12px;">
+        This is an automated notification from AWS Service Monitor.<br>
+        Sent: {timestamp}
+    </p>
+</body>
+</html>
+"""
+
+        text_body = f"""Service Approval Request
+
+A new AWS service has been detected and added to the blacklist SCP.
+
+SERVICE DETAILS:
+  Service Name: {service_name}
+  Detected At: {timestamp}
+  Status: Pending Approval
+
+WHAT THIS MEANS:
+This service is currently blocked by the SCP. You can approve it to move it to the allowlist.
+
+NEXT STEPS:
+1. Review the service: {service_name}
+2. Determine if this service should be approved for use in your organization
+3. Update the 'approved_services' list in 'terraform.tfvars' to include this service
+4. Run 'terraform apply' to apply the approval
+5. The service will be excluded from the SCP deny list on the next monitor run
+
+QUICK REFERENCE:
+To approve this service, add it to your terraform configuration:
+
+approved_services = [
+  "{service_name}"
+]
+
+---
+This is an automated notification from AWS Service Monitor.
+Sent: {timestamp}
+>>>>>>> origin/feature/service-approval
 """
 
         ses.send_email(
             Source=SENDER_EMAIL,
+<<<<<<< HEAD
             Destination={'ToAddresses': APPROVAL_RECIPIENTS},
             Message={
                 'Subject': {'Data': subject, 'Charset': 'UTF-8'},
@@ -991,6 +1124,18 @@ Then run: terraform apply
             }
         )
         logger.info(f"Sent approval request email for service '{service_name}'")
+=======
+            Destination={'ToAddresses': approval_recipients},
+            Message={
+                'Subject': {'Data': subject},
+                'Body': {
+                    'Html': {'Data': html_body},
+                    'Text': {'Data': text_body}
+                }
+            }
+        )
+        logger.info(f"Sent approval request email for service '{service_name}' to {len(approval_recipients)} recipients")
+>>>>>>> origin/feature/service-approval
         return True
     except Exception as e:
         logger.error(f"Failed to send approval request email: {str(e)}")
@@ -1074,6 +1219,11 @@ def lambda_handler(event, context):
         logger.info(f"Tracked services: {len(tracked_services)}")
         logger.info(f"New services: {len(new_services)}")
 
+        # Load approved services (excluded from SCP deny list)
+        approved_services = get_approved_services()
+        if approved_services:
+            logger.info(f"Approved services: {len(approved_services)}")
+
         if new_services:
             # Validate service names
             valid_services, invalid_services = validate_service_names(new_services)
@@ -1090,7 +1240,21 @@ def lambda_handler(event, context):
 
             new_services_list = sorted(list(valid_services))
 
+<<<<<<< HEAD
             # Store new services in DynamoDB and update checksum to prevent false tamper alerts
+=======
+            # Separate approved services from those that need SCP update
+            approved_from_new = [s for s in new_services_list if s in approved_services]
+            services_for_scp_update = [s for s in new_services_list if s not in approved_services]
+
+            if approved_from_new:
+                logger.info(f"New services already in approval list: {approved_from_new}")
+
+            if services_for_scp_update:
+                logger.info(f"Services to add to SCP: {len(services_for_scp_update)}")
+
+            # Store new services in DynamoDB
+>>>>>>> origin/feature/service-approval
             store_new_services(new_services_list)
             update_baseline_checksum(tracked_services | set(new_services_list))
 
@@ -1108,6 +1272,7 @@ def lambda_handler(event, context):
                     track_service_for_approval(service, start_time)
                     send_approval_request_email(service, start_time)
 
+<<<<<<< HEAD
             scp_update_status = 'not_attempted'
             scp_error = None
 
@@ -1137,6 +1302,48 @@ def lambda_handler(event, context):
                 scp_update_status = 'disabled'
 
             # Send notification email (always enabled)
+=======
+            # Send approval request emails for services needing approval
+            if services_for_scp_update and ENABLE_SERVICE_APPROVAL_WORKFLOW:
+                for service in services_for_scp_update:
+                    track_service_for_approval(service, start_time)
+                    send_approval_request_email(service, start_time)
+
+            # Get SCP policy
+            scp_policy = get_scp_policy()
+            scp_update_status = 'not_attempted'
+            scp_error = None
+
+            # Only update SCP if there are services not in approval list
+            if services_for_scp_update and scp_policy:
+                # Generate preview first (with filtered services)
+                preview = generate_scp_preview(scp_policy, services_for_scp_update)
+
+                if REQUIRE_APPROVAL:
+                    logger.info("Approval required - storing preview for manual review")
+                    scp_update_status = 'pending_approval'
+                    # Store preview in DynamoDB for approval workflow
+                    store_pending_scp_update(preview)
+                else:
+                    # Update SCP with validation
+                    success, message = update_scp_with_services(scp_policy, services_for_scp_update)
+                    scp_update_status = 'success' if success else 'failed'
+                    scp_error = message if not success else None
+                    logger.info(f"SCP update result: {message}")
+            elif services_for_scp_update and not scp_policy:
+                # Unapproved services detected but SCP policy not found
+                logger.error(f"New services detected but SCP '{SCP_NAME}' not found in organization")
+                scp_update_status = 'not_found'
+                scp_error = f"SCP policy '{SCP_NAME}' not found"
+            elif not services_for_scp_update and new_services_list:
+                logger.info("All new services are in approval list - no SCP update needed")
+                scp_update_status = 'no_unapproved_services'
+            elif not scp_policy:
+                logger.warning(f"SCP '{SCP_NAME}' not found in organization")
+                scp_update_status = 'not_found'
+
+            # Send notification email (with all new services, including approved ones)
+>>>>>>> origin/feature/service-approval
             send_notification_email(new_services_list, scp_update_status)
 
             # Publish metrics for dashboard and alarms

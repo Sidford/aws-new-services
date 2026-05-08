@@ -1,1 +1,1 @@
-{"statusCode": 500, "body": "{\"error\": \"Baseline integrity check failed\", \"details\": \"Checksum mismatch: expected 006d75f9, got bfd9777d\", \"action\": \"Security alert sent\"}"}
+{"statusCode": 200, "body": "{\"message\": \"Baseline established\", \"baseline_services\": 449, \"status\": \"baseline_initialized\", \"note\": \"No actions taken on first run. Monitoring will begin on next execution.\", \"scan_time\": \"2026-05-08T07:48:23.897991\"}"}
