@@ -50,7 +50,9 @@ def fetch_aws_services() -> Set[str]:
         data = response.json()
 
         services = set()
-        if isinstance(data, dict):
+        if isinstance(data, list):
+            services = {item['service'] for item in data if isinstance(item, dict) and 'service' in item}
+        elif isinstance(data, dict):
             if 'services' in data:
                 services = set(data['services'].keys())
             else:
@@ -65,7 +67,7 @@ def fetch_aws_services() -> Set[str]:
     except requests.exceptions.RequestException as e:
         logger.error(f"Failed to fetch AWS services: {str(e)}")
         return set()
-    except (json.JSONDecodeError, KeyError) as e:
+    except (json.JSONDecodeError, KeyError, TypeError) as e:
         logger.error(f"Failed to parse service reference response: {str(e)}")
         return set()
 
