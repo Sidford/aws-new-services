@@ -63,16 +63,18 @@ require_scp_approval = true
 # ============================================================================
 # SERVICE APPROVAL & ALLOWLIST
 # ============================================================================
-# Enable approval workflow — sends approval request emails when new services are detected
+# Enable approval workflow for moving services from blacklist to approved list
 enable_service_approval_workflow = true
 
 # Pre-approved services (excluded from SCP deny list)
+# Add services here that you want to allow even if they're detected as new
 approved_services = [
   # "example-service-1",
   # "example-service-2"
 ]
 
-# Email addresses to receive approval requests (defaults to email_recipients if empty)
+# Email addresses to receive approval requests for blacklisted services
+# Leave empty to use email_recipients for approval requests
 approval_recipients = [
   # "approval-team@example.com"
 ]

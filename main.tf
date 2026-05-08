@@ -1,44 +1,3 @@
-# KMS key for DynamoDB encryption (T003 mitigation)
-resource "aws_kms_key" "dynamodb" {
-  description             = "CMK for aws-service-monitor DynamoDB tables"
-  enable_key_rotation     = true
-  deletion_window_in_days = 14
-
-  policy = jsonencode({
-    Version = "2012-10-17"
-    Statement = [
-      {
-        Sid    = "AllowAccountAdmin"
-        Effect = "Allow"
-        Principal = {
-          AWS = "arn:aws:iam::${data.aws_caller_identity.current.account_id}:root"
-        }
-        Action   = "kms:*"
-        Resource = "*"
-      },
-      {
-        Sid    = "AllowLambdaEncryptDecrypt"
-        Effect = "Allow"
-        Principal = {
-          AWS = aws_iam_role.lambda_role.arn
-        }
-        Action = [
-          "kms:GenerateDataKey",
-          "kms:Decrypt"
-        ]
-        Resource = "*"
-      }
-    ]
-  })
-
-  tags = var.tags
-}
-
-resource "aws_kms_alias" "dynamodb" {
-  name          = "alias/aws-service-monitor-dynamodb"
-  target_key_id = aws_kms_key.dynamodb.key_id
-}
-
 # S3 bucket for immutable baseline snapshots (T004 mitigation)
 resource "aws_s3_bucket" "baseline_snapshots" {
   bucket = "service-monitor-baseline-${data.aws_caller_identity.current.account_id}-${var.aws_region}"
@@ -91,12 +50,12 @@ resource "aws_s3_bucket_lifecycle_configuration" "baseline_snapshots" {
     id     = "delete_old_snapshots"
     status = "Enabled"
 
-    filter {}
-
+    # Delete snapshots older than 1 year
     expiration {
       days = 365
     }
 
+    # Delete old versions after 90 days
     noncurrent_version_expiration {
       noncurrent_days = 90
     }
@@ -114,13 +73,8 @@ resource "aws_dynamodb_table" "service_registry" {
     type = "S"
   }
 
-  point_in_time_recovery {
+  point_in_time_recovery_specification {
     enabled = true
-  }
-
-  server_side_encryption {
-    enabled     = true
-    kms_key_arn = aws_kms_key.dynamodb.arn
   }
 
   ttl {
@@ -153,13 +107,8 @@ resource "aws_dynamodb_table" "approved_services" {
     projection_type = "ALL"
   }
 
-  point_in_time_recovery {
+  point_in_time_recovery_specification {
     enabled = true
-  }
-
-  server_side_encryption {
-    enabled     = true
-    kms_key_arn = aws_kms_key.dynamodb.arn
   }
 
   tags = var.tags
@@ -202,19 +151,8 @@ resource "aws_iam_role_policy" "lambda_dynamodb_policy" {
           "dynamodb:Query",
           "dynamodb:Scan"
         ]
-        Resource = aws_dynamodb_table.service_registry.arn
-      },
-      {
-        # T015: approved-services is read + PutItem (pending records) only.
-        # UpdateItem and Scan are withheld — Lambda cannot promote a record to
-        # 'approved' status nor enumerate the table without going through the GSI.
-        Effect = "Allow"
-        Action = [
-          "dynamodb:GetItem",
-          "dynamodb:PutItem",
-          "dynamodb:Query"
-        ]
         Resource = [
+          aws_dynamodb_table.service_registry.arn,
           aws_dynamodb_table.approved_services.arn,
           "${aws_dynamodb_table.approved_services.arn}/index/*"
         ]
@@ -223,7 +161,7 @@ resource "aws_iam_role_policy" "lambda_dynamodb_policy" {
   })
 }
 
-# IAM policy for Lambda to access Organizations and SCP (T005 mitigation)
+# IAM policy for Lambda to access Organizations and SCP
 resource "aws_iam_role_policy" "lambda_scp_policy" {
   name = "lambda-scp-policy"
   role = aws_iam_role.lambda_role.id
@@ -232,87 +170,16 @@ resource "aws_iam_role_policy" "lambda_scp_policy" {
     Version = "2012-10-17"
     Statement = [
       {
-        Effect   = "Allow"
-        Action   = ["organizations:ListPolicies"]
-        Resource = "*"
-        Condition = {
-          StringEquals = {
-            "organizations:PolicyType" = "SERVICE_CONTROL_POLICY"
-          }
-        }
-      },
-      {
-        Effect   = "Allow"
-        Action   = ["organizations:DescribePolicy", "organizations:UpdatePolicy"]
-        Resource = "arn:aws:organizations::${data.aws_caller_identity.current.account_id}:policy/p-*"
-        Condition = {
-          StringEquals = {
-            "organizations:PolicyType" = "SERVICE_CONTROL_POLICY"
-          }
-        }
-      }
-    ]
-  })
-}
-
-# T005: SNS topic in us-east-1 for SCP change alerts (Organizations CloudTrail
-# events are only available in us-east-1 EventBridge).
-resource "aws_sns_topic" "scp_change_alerts" {
-  provider = aws.us_east_1
-  name     = "aws-service-monitor-scp-change-alerts"
-  tags     = var.tags
-}
-
-resource "aws_sns_topic_subscription" "scp_change_alert_emails" {
-  provider  = aws.us_east_1
-  count     = length(var.email_recipients)
-  topic_arn = aws_sns_topic.scp_change_alerts.arn
-  protocol  = "email"
-  endpoint  = var.email_recipients[count.index]
-}
-
-resource "aws_sns_topic_policy" "scp_change_alerts" {
-  provider = aws.us_east_1
-  arn      = aws_sns_topic.scp_change_alerts.arn
-
-  policy = jsonencode({
-    Version = "2012-10-17"
-    Statement = [
-      {
-        Sid    = "AllowEventBridgePublish"
         Effect = "Allow"
-        Principal = {
-          Service = "events.amazonaws.com"
-        }
-        Action   = "sns:Publish"
-        Resource = aws_sns_topic.scp_change_alerts.arn
+        Action = [
+          "organizations:ListPolicies",
+          "organizations:DescribePolicy",
+          "organizations:UpdatePolicy"
+        ]
+        Resource = "*"
       }
     ]
   })
-}
-
-# EventBridge rule in us-east-1 to detect any SCP policy modification
-resource "aws_cloudwatch_event_rule" "scp_changes" {
-  provider    = aws.us_east_1
-  name        = "aws-service-monitor-scp-changes"
-  description = "Alert on any direct SCP policy modification outside the Lambda workflow (T005)"
-
-  event_pattern = jsonencode({
-    source      = ["aws.organizations"]
-    detail-type = ["AWS API Call via CloudTrail"]
-    detail = {
-      eventName = ["UpdatePolicy", "DeletePolicy", "CreatePolicy", "AttachPolicy", "DetachPolicy"]
-    }
-  })
-
-  tags = var.tags
-}
-
-resource "aws_cloudwatch_event_target" "scp_changes_sns" {
-  provider  = aws.us_east_1
-  rule      = aws_cloudwatch_event_rule.scp_changes.name
-  target_id = "scp-change-sns-alert"
-  arn       = aws_sns_topic.scp_change_alerts.arn
 }
 
 # IAM policy for Lambda to write baseline snapshots to S3 (T004 mitigation)
@@ -421,26 +288,6 @@ resource "aws_iam_role_policy" "lambda_logs_policy" {
   })
 }
 
-# IAM policy for Lambda to use the DynamoDB KMS key (T003 mitigation)
-resource "aws_iam_role_policy" "lambda_kms_policy" {
-  name = "lambda-kms-dynamodb-policy"
-  role = aws_iam_role.lambda_role.id
-
-  policy = jsonencode({
-    Version = "2012-10-17"
-    Statement = [
-      {
-        Effect = "Allow"
-        Action = [
-          "kms:GenerateDataKey",
-          "kms:Decrypt"
-        ]
-        Resource = aws_kms_key.dynamodb.arn
-      }
-    ]
-  })
-}
-
 # SNS topic for CloudWatch Alarms and operational alerts
 resource "aws_sns_topic" "alerts" {
   name = "aws-service-monitor-alerts"
@@ -475,18 +322,18 @@ resource "aws_lambda_function" "service_monitor" {
 
   environment {
     variables = {
-      DYNAMODB_TABLE                   = aws_dynamodb_table.service_registry.name
-      APPROVED_SERVICES_TABLE          = aws_dynamodb_table.approved_services.name
-      SCP_NAME                         = var.scp_name
-      EMAIL_RECIPIENTS                 = jsonencode(var.email_recipients)
-      SENDER_EMAIL                     = var.sender_email
-      REQUIRE_APPROVAL                 = var.require_scp_approval ? "true" : "false"
-      MANAGE_SCP_POLICY                = var.manage_scp_policy ? "true" : "false"
-      BASELINE_SNAPSHOT_BUCKET         = aws_s3_bucket.baseline_snapshots.id
-      ALERT_TOPIC_ARN                  = aws_sns_topic.alerts.arn
-      ENABLE_SERVICE_APPROVAL_WORKFLOW = var.enable_service_approval_workflow ? "true" : "false"
-      APPROVED_SERVICES_LIST           = jsonencode(var.approved_services)
-      APPROVAL_RECIPIENTS              = jsonencode(length(var.approval_recipients) > 0 ? var.approval_recipients : var.email_recipients)
+      DYNAMODB_TABLE                      = aws_dynamodb_table.service_registry.name
+      APPROVED_SERVICES_TABLE             = aws_dynamodb_table.approved_services.name
+      SCP_NAME                            = var.scp_name
+      EMAIL_RECIPIENTS                    = jsonencode(var.email_recipients)
+      SENDER_EMAIL                        = var.sender_email
+      AWS_REGION                          = var.aws_region
+      REQUIRE_APPROVAL                    = var.require_scp_approval ? "true" : "false"
+      BASELINE_SNAPSHOT_BUCKET            = aws_s3_bucket.baseline_snapshots.id
+      ALERT_TOPIC_ARN                     = aws_sns_topic.alerts.arn
+      ENABLE_SERVICE_APPROVAL_WORKFLOW    = var.enable_service_approval_workflow ? "true" : "false"
+      APPROVED_SERVICES_LIST              = jsonencode(var.approved_services)
+      APPROVAL_RECIPIENTS                 = jsonencode(length(var.approval_recipients) > 0 ? var.approval_recipients : var.email_recipients)
     }
   }
 
