@@ -916,7 +916,13 @@ def track_service_for_approval(service_name: str, timestamp: str) -> bool:
 
 def send_approval_request_email(service_name: str, timestamp: str) -> bool:
     """Send approval request email for a new blacklisted service."""
-    if not ENABLE_SERVICE_APPROVAL_WORKFLOW or not APPROVAL_RECIPIENTS:
+    if not ENABLE_SERVICE_APPROVAL_WORKFLOW:
+        return True
+
+    # Validate that approval recipients are configured
+    approval_recipients = APPROVAL_RECIPIENTS if APPROVAL_RECIPIENTS else EMAIL_RECIPIENTS
+    if not approval_recipients:
+        logger.warning("No approval recipients configured, skipping approval email")
         return True
 
     try:
@@ -1008,7 +1014,7 @@ Sent: {timestamp}
 
         ses.send_email(
             Source=SENDER_EMAIL,
-            Destination={'ToAddresses': APPROVAL_RECIPIENTS},
+            Destination={'ToAddresses': approval_recipients},
             Message={
                 'Subject': {'Data': subject},
                 'Body': {
@@ -1017,7 +1023,7 @@ Sent: {timestamp}
                 }
             }
         )
-        logger.info(f"Sent approval request email for service '{service_name}'")
+        logger.info(f"Sent approval request email for service '{service_name}' to {len(approval_recipients)} recipients")
         return True
     except Exception as e:
         logger.error(f"Failed to send approval request email: {str(e)}")
@@ -1162,11 +1168,16 @@ def lambda_handler(event, context):
                     scp_update_status = 'success' if success else 'failed'
                     scp_error = message if not success else None
                     logger.info(f"SCP update result: {message}")
+            elif services_for_scp_update and not scp_policy:
+                # Unapproved services detected but SCP policy not found
+                logger.error(f"New services detected but SCP '{SCP_NAME}' not found in organization")
+                scp_update_status = 'not_found'
+                scp_error = f"SCP policy '{SCP_NAME}' not found"
             elif not services_for_scp_update and new_services_list:
                 logger.info("All new services are in approval list - no SCP update needed")
                 scp_update_status = 'no_unapproved_services'
-            elif scp_policy:
-                logger.warning(f"SCP '{SCP_NAME}' not found")
+            elif not scp_policy:
+                logger.warning(f"SCP '{SCP_NAME}' not found in organization")
                 scp_update_status = 'not_found'
 
             # Send notification email (with all new services, including approved ones)
