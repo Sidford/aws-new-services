@@ -1,1 +1,1 @@
-{"statusCode": 500, "body": "{\"error\": \"Failed to fetch AWS services\"}"}
+{"statusCode": 500, "body": "{\"error\": \"Baseline integrity check failed\", \"details\": \"Checksum mismatch: expected 006d75f9, got bfd9777d\", \"action\": \"Security alert sent\"}"}

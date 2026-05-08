@@ -139,7 +139,7 @@ def verify_baseline_integrity() -> Tuple[bool, str]:
 
         # Get all tracked services (excluding metadata)
         scan_response = table.scan(
-            FilterExpression='attribute_not_exists(service_name) OR NOT begins_with(service_name, :prefix)',
+            FilterExpression='attribute_exists(service_name) AND NOT begins_with(service_name, :prefix)',
             ExpressionAttributeValues={':prefix': '__'},
             ProjectionExpression='service_name'
         )
@@ -149,7 +149,7 @@ def verify_baseline_integrity() -> Tuple[bool, str]:
         # Handle pagination
         while 'LastEvaluatedKey' in scan_response:
             scan_response = table.scan(
-                FilterExpression='attribute_not_exists(service_name) OR NOT begins_with(service_name, :prefix)',
+                FilterExpression='attribute_exists(service_name) AND NOT begins_with(service_name, :prefix)',
                 ExpressionAttributeValues={':prefix': '__'},
                 ProjectionExpression='service_name',
                 ExclusiveStartKey=scan_response['LastEvaluatedKey']
@@ -210,7 +210,7 @@ def initialize_baseline(services: Set[str]) -> bool:
         )
 
         # Store all current services as baseline
-        with table.batch_writer(batch_size=25) as batch:
+        with table.batch_writer() as batch:
             for service in services:
                 batch.put_item(Item={
                     'service_name': service,
@@ -343,7 +343,7 @@ def store_new_services(services: List[str]) -> None:
         table = dynamodb.Table(DYNAMODB_TABLE)
         timestamp = datetime.utcnow().isoformat()
 
-        with table.batch_writer(batch_size=25) as batch:
+        with table.batch_writer() as batch:
             for service in services:
                 batch.put_item(Item={
                     'service_name': service,
