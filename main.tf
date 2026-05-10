@@ -476,7 +476,6 @@ resource "aws_lambda_function" "service_monitor" {
 
   environment {
     variables = {
-<<<<<<< HEAD
       DYNAMODB_TABLE                   = aws_dynamodb_table.service_registry.name
       APPROVED_SERVICES_TABLE          = aws_dynamodb_table.approved_services.name
       SCP_NAME                         = var.scp_name
@@ -489,20 +488,6 @@ resource "aws_lambda_function" "service_monitor" {
       ENABLE_SERVICE_APPROVAL_WORKFLOW = var.enable_service_approval_workflow ? "true" : "false"
       APPROVED_SERVICES_LIST           = jsonencode(var.approved_services)
       APPROVAL_RECIPIENTS              = jsonencode(length(var.approval_recipients) > 0 ? var.approval_recipients : var.email_recipients)
-=======
-      DYNAMODB_TABLE                      = aws_dynamodb_table.service_registry.name
-      APPROVED_SERVICES_TABLE             = aws_dynamodb_table.approved_services.name
-      SCP_NAME                            = var.scp_name
-      EMAIL_RECIPIENTS                    = jsonencode(var.email_recipients)
-      SENDER_EMAIL                        = var.sender_email
-      AWS_REGION                          = var.aws_region
-      REQUIRE_APPROVAL                    = var.require_scp_approval ? "true" : "false"
-      BASELINE_SNAPSHOT_BUCKET            = aws_s3_bucket.baseline_snapshots.id
-      ALERT_TOPIC_ARN                     = aws_sns_topic.alerts.arn
-      ENABLE_SERVICE_APPROVAL_WORKFLOW    = var.enable_service_approval_workflow ? "true" : "false"
-      APPROVED_SERVICES_LIST              = jsonencode(var.approved_services)
-      APPROVAL_RECIPIENTS                 = jsonencode(length(var.approval_recipients) > 0 ? var.approval_recipients : var.email_recipients)
->>>>>>> origin/feature/service-approval
     }
   }
 
