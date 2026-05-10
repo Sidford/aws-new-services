@@ -546,6 +546,88 @@ dynamodb = boto3.resource(
 )
 ```
 
+## Service Approval & Allowlist Feature
+
+The system includes an approval workflow for managing blacklisted services:
+
+### How It Works
+
+1. **Detection**: New services are detected automatically
+2. **Approval Request**: Email sent to approval team if service needs review
+3. **Approval**: Service added to `approved_services` list in configuration
+4. **Exclusion**: Service removed from SCP deny list
+
+### Key Functions
+
+- `get_approved_services()`: Load approved services from config and DynamoDB
+- `track_service_for_approval()`: Record service as pending approval
+- `send_approval_request_email()`: Send approval request to team
+
+### Customizing Approval Workflow
+
+#### Disable Approval Emails
+
+```hcl
+# In terraform.tfvars
+enable_service_approval_workflow = false
+```
+
+#### Change Approval Recipients
+
+```hcl
+# Send approval emails to specific team
+approval_recipients = [
+  "security-team@example.com",
+  "infrastructure-team@example.com"
+]
+```
+
+#### Pre-approve Services
+
+```hcl
+# Services detected but not added to SCP
+approved_services = [
+  "example-service",
+  "another-approved-service"
+]
+```
+
+#### Customize Approval Email
+
+Edit the `send_approval_request_email()` function in `lambda/index.py`:
+
+```python
+def send_approval_request_email(service_name: str, timestamp: str) -> bool:
+    """Customize this function to change approval email template."""
+    subject = f"My Custom Subject: {service_name}"
+    html_body = f"""
+    <!-- Your custom HTML here -->
+    """
+    text_body = f"""
+    Your custom text here
+    """
+    # ... rest of implementation
+```
+
+### Testing Approval Workflow
+
+```python
+# Test approval detection
+import json
+from lambda.index import get_approved_services, track_service_for_approval
+
+# Simulate approved services
+os.environ['APPROVED_SERVICES_LIST'] = json.dumps(['service1', 'service2'])
+approved = get_approved_services()
+print(f"Approved: {approved}")
+
+# Track for approval
+success = track_service_for_approval('test-service', '2026-04-29T08:15:33Z')
+print(f"Tracked: {success}")
+```
+
+For more information, see [SERVICE_APPROVAL_MANAGEMENT.md](./runbooks/SERVICE_APPROVAL_MANAGEMENT.md).
+
 ## Related Documentation
 
 - [AWS Lambda Documentation](https://docs.aws.amazon.com/lambda/)

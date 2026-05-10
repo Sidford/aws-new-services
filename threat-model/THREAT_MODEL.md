@@ -18,6 +18,14 @@ This document describes the threat model for the AWS Service Monitor solution. I
 | Mitigated | 16 |
 | Accepted | 6 |
 
+```mermaid
+%%{init: {'theme': 'dark', 'themeVariables': {'primaryColor': '#1a1a1a', 'primaryBorderColor': '#333333', 'background': '#000000', 'mainBkg': '#000000', 'secondBkg': '#1a1a1a', 'tertiaryBkg': '#2a2a2a'}}}%%
+pie title Threat Disposition (17 total)
+    "Accepted" : 6
+    "Mitigated" : 5
+    "Remaining" : 6
+```
+
 ---
 
 ## System Architecture
@@ -37,45 +45,40 @@ This document describes the threat model for the AWS Service Monitor solution. I
 
 ### Trust Boundaries
 
-```
-┌──────────────────────────────────────────────────────────┐
-│               AWS Management Account                     │
-│  ┌────────────┐   ┌──────────────────────────────┐      │
-│  │  Lambda    │──▶│  DynamoDB: service-registry  │      │
-│  └────────────┘   └──────────────────────────────┘      │
-│       │           ┌──────────────────────────────┐      │
-│       ├──────────▶│  DynamoDB: approved-services │      │
-│       │           └──────────────────────────────┘      │
-│       ├─────────────────────────▶ SCP Policy            │
-│       ├─────────────────────────▶ CloudWatch Logs       │
-│       ├─────────────────────────▶ S3 (snapshots)        │
-│       └──────────────────────────────────────┐          │
-│                                              │          │
-│  ┌────────────┐                              │          │
-│  │ EventBridge│──────────────────────────────┘          │
-│  └────────────┘                                         │
-└──────────────────────────────────────────────────────────┘
-         │                    │
-         │                    ▼
-    HTTPS│            ┌──────────────┐
-         │            │ CloudTrail   │
-         ▼            └──────────────┘
-┌──────────────────────────────────────────────────────────┐
-│                   External Services                      │
-│  ┌──────────────────┐    ┌────────────────────────────┐ │
-│  │ Service Reference│    │  SES Email (alerts/approvals│ │
-│  └──────────────────┘    └────────────────────────────┘ │
-└──────────────────────────────────────────────────────────┘
+```mermaid
+%%{init: {'theme': 'dark', 'themeVariables': {'primaryColor': '#1a1a1a', 'primaryBorderColor': '#333333', 'background': '#000000', 'mainBkg': '#000000', 'secondBkg': '#1a1a1a', 'tertiaryBkg': '#2a2a2a'}}}%%
+flowchart TD
+    EB["EventBridge\n(daily schedule)"]:::external
+    GHA["GitHub Actions\n(deploy only)"]:::gha
+    SR["Service Reference\n(external HTTPS)"]:::ext_service
 
-┌──────────────────────────────────────────────────────────┐
-│                   GitHub (External)                      │
-│  ┌──────────────────────────────────────────────────┐   │
-│  │  GitHub Actions (claude.yml, claude-code-review) │   │
-│  │  - Triggers on PR comments / review events       │   │
-│  │  - Uses CLAUDE_CODE_OAUTH_TOKEN secret           │   │
-│  │  - id-token: write (OIDC)                        │   │
-│  └──────────────────────────────────────────────────┘   │
-└──────────────────────────────────────────────────────────┘
+    Lambda["Lambda\naws-service-monitor"]:::lambda
+
+    DB1["DynamoDB\nservice-registry"]:::dynamo
+    DB2["DynamoDB\napproved-services"]:::dynamo
+    SCP["SCP / Organizations"]:::scp
+    S3["S3\nbaseline snapshots"]:::dynamo
+    SES["SES\nemail notifications"]:::ext_service
+    CW["CloudWatch\nlogs & metrics"]:::dynamo
+    SNS["SNS\nalerts"]:::dynamo
+
+    EB --> Lambda
+    SR --> Lambda
+    Lambda --> DB1
+    Lambda --> DB2
+    Lambda --> SCP
+    Lambda --> S3
+    Lambda --> SES
+    Lambda --> CW
+    Lambda --> SNS
+    GHA -.->|deploy only| Lambda
+
+    classDef lambda fill:#1e3a5f,stroke:#4a9eff,color:#e8f4ff
+    classDef dynamo fill:#0f2027,stroke:#4a9eff,color:#e8f4ff
+    classDef scp fill:#2d1b1b,stroke:#ff6b6b,color:#ffe8e8
+    classDef ext_service fill:#1a2f1a,stroke:#51cf66,color:#e8ffe8
+    classDef gha fill:#2d2d1b,stroke:#ffd43b,color:#fffbe8
+    classDef external fill:#1a2f1a,stroke:#51cf66,color:#e8ffe8
 ```
 
 ---
@@ -745,25 +748,33 @@ subject = f"[Approval-{request_id}] AWS Service Monitor: Approval Request for '{
 
 ### Risk Matrix
 
-```
-                  Likelihood
-               Low       Medium     High
-Severity:
-Critical       [T005]    [T007]
-               
-High           [T003]    [T015]
-               [T004]    [T016]
-               [T006]
-               [T011]
-               [T012]
-               [T013]
-              
-Medium         [T001]    [T010]
-               [T002]    [T014]
-               [T008]
-               
-Low            [T009]
-               [T017]
+```mermaid
+%%{init: {'theme': 'dark', 'themeVariables': {'primaryColor': '#1a1a1a', 'primaryBorderColor': '#333333', 'background': '#000000', 'mainBkg': '#000000', 'secondBkg': '#1a1a1a', 'tertiaryBkg': '#2a2a2a'}}}%%
+quadrantChart
+    title Risk Matrix — Likelihood vs Severity
+    x-axis Low Likelihood --> High Likelihood
+    y-axis Low Severity --> High Severity
+    quadrant-1 Monitor Closely
+    quadrant-2 Critical Action
+    quadrant-3 Accept / Watch
+    quadrant-4 Mitigate Soon
+    T001: [0.15, 0.37]
+    T002: [0.15, 0.37]
+    T003 ✅: [0.5, 0.62]
+    T004: [0.15, 0.62]
+    T005 ✅: [0.5, 0.87]
+    T006: [0.15, 0.62]
+    T007: [0.5, 0.87]
+    T008: [0.15, 0.37]
+    T009: [0.15, 0.12]
+    T010: [0.5, 0.37]
+    T011: [0.15, 0.62]
+    T012: [0.15, 0.62]
+    T013 ✅: [0.15, 0.62]
+    T014: [0.5, 0.37]
+    T015 ✅: [0.5, 0.62]
+    T016 ✅: [0.5, 0.62]
+    T017: [0.15, 0.37]
 ```
 
 ### Threat Status
@@ -778,80 +789,23 @@ Low            [T009]
 
 ## Implementation Roadmap
 
-### Phase 1: Critical (Week 1)
-
-```
-Priority 1: GitHub Actions Hardening (T016) ✅ DONE
-├─ ✅ Pinned actions/checkout and claude-code-action to immutable commit SHAs
-├─ ✅ Actor allowlist added (github.actor == 'baldrickuk')
-├─ ✅ id-token: write removed from both workflows
-├─ ✅ External plugin dependency removed; inline prompt used instead
-└─ Completed 2026-05-03
-
-Priority 2: Approved-Services Table Write Protection (T015) ✅ DONE
-├─ ✅ Split Lambda IAM: UpdateItem + Scan withheld from approved-services table
-├─ ✅ CloudWatch alarm added for write-volume anomaly on approved-services
-├─ ✅ WARNING-level log when approved service bypasses SCP
-└─ Completed 2026-05-03
-
-Priority 3: Policy Drift Detection (T005) ✅ DONE
-├─ ✅ organizations:UpdatePolicy IAM scoped to SCP type + policy ARN pattern
-├─ ✅ EventBridge rule in us-east-1 detects all SCP modification events
-├─ ✅ SNS topic + email subscriptions in us-east-1 for immediate alerting
-└─ Completed 2026-05-03
-
-Priority 4: KMS Encryption (T015)
-├─ ✅ DONE (T003): CMK applied to both DynamoDB tables, Lambda KMS policy added, anomaly alarm deployed
-├─ T015: Extend KMS key policy to restrict approved-services table writes by principal
-└─ Estimated effort: 1 hour
-```
-
-### Phase 2: Important (Month 1)
-
-```
-Priority 1: Checksum Conditional Write Hardening (T004)
-├─ Add ConditionExpression to update_baseline_checksum()
-├─ Propagate update failure to lambda_handler return value
-└─ Estimated effort: 2 hours
-
-Priority 2: Approved-Services Fallback Alerting (T017)
-├─ Send SNS alert when approved-services DynamoDB query fails
-├─ Log warning with operator instructions
-└─ Estimated effort: 1 hour
-
-Priority 3: Log Export to S3 (T013) ✅ MITIGATED (LZA)
-├─ ✅ Centralised log export, S3 Object Lock, and logging account isolation
-│   provided by the AWS Landing Zone Accelerator platform
-└─ No application-level changes required in LZA deployments
-
-Priority 4: EventBridge Monitoring (T012)
-├─ Alert on rule modifications
-├─ CloudWatch alarm
-└─ Estimated effort: 2 hours
-```
-
-### Phase 3: Nice-to-Have (Quarter 2)
-
-```
-Priority 1: Approval Request Traceability (T017)
-├─ Add unique request ID to approval emails
-├─ Record request ID in approved-services DynamoDB item
-└─ Estimated effort: 2 hours
-
-Priority 2: Service Name Encryption (T014)
-├─ Encrypt in logs and emails
-├─ Tokenization approach
-└─ Estimated effort: 8 hours
-
-Priority 3: Multi-Region Setup
-├─ Failover capability
-├─ Data replication
-└─ Estimated effort: 20 hours
-
-Priority 4: Advanced Monitoring
-├─ Service usage analytics
-├─ Anomaly detection
-└─ Estimated effort: 10 hours
+```mermaid
+%%{init: {'theme': 'dark', 'themeVariables': {'primaryColor': '#1a1a1a', 'primaryBorderColor': '#333333', 'background': '#000000', 'mainBkg': '#000000', 'secondBkg': '#1a1a1a', 'tertiaryBkg': '#2a2a2a'}}}%%
+timeline
+    title Implementation Roadmap
+    section Phase 1 — Critical ✅ Complete
+        Week 1 : T016 GitHub Actions hardening ✅
+               : T015 Approved-services IAM split ✅
+               : T005 SCP modification detection ✅
+               : T003 KMS CMK encryption ✅
+    section Phase 2 — Important
+        Month 1 : T004 Checksum conditional write hardening
+                : T017 Approved-services fallback alerting
+                : T012 EventBridge rule monitoring
+    section Phase 3 — Nice to Have
+        Quarter 2 : T017 Approval request traceability
+                  : T014 Service name log encryption
+                  : Multi-region setup
 ```
 
 ---
@@ -896,3 +850,14 @@ The `update_baseline_checksum()` bug fix (T004) substantially reduces the false-
 | T015 | Tampering / Elevation of Privilege | DynamoDB (approved-services) |
 | T016 | Tampering / Information Disclosure | GitHub Actions CI/CD |
 | T017 | Spoofing / Tampering | Approval Email Workflow |
+
+```mermaid
+%%{init: {'theme': 'dark'}}%%
+pie title STRIDE Category Distribution
+    "Tampering" : 9
+    "Elevation of Privilege" : 2
+    "Information Disclosure" : 2
+    "Spoofing" : 2
+    "DoS" : 1
+    "Repudiation" : 1
+```
