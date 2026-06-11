@@ -628,6 +628,366 @@ print(f"Tracked: {success}")
 
 For more information, see [SERVICE_APPROVAL_MANAGEMENT.md](./runbooks/SERVICE_APPROVAL_MANAGEMENT.md).
 
+## Regional Availability Monitoring
+
+The system monitors when new AWS services become available in your target region (eu-west-2 by default). This provides early intelligence about what services AWS is bringing to market, even before they reach your region.
+
+### How It Works
+
+**Zero-Trust Approach:**
+1. **Immediate Protection**: All new services are added to SCP blacklist immediately (cautious-by-default)
+2. **Regional Intelligence**: System checks if service is available in your target region
+3. **Pending Tracking**: Services not yet in region are recorded for daily monitoring
+4. **Regional Alert**: When a pending service becomes available in region, you're notified
+
+### Service Lifecycle
+
+```
+AWS Announces New Service
+         ↓
+    [DETECTED]
+         ↓
+    ┌────────────────────────┐
+    │ Check Regional Avail.  │
+    └────┬──────────┬────────┘
+         │          │
+      YES│          │NO
+         │          │
+    ┌────▼─┐    ┌───▼──────────────┐
+    │ACTIVE│    │PENDING (Tracking)│ ← Daily monitoring
+    │(SCP) │    │(Not in region)   │
+    └──────┘    └───┬──────────────┘
+                    │
+              Region becomes available
+                    │
+                    ↓
+              [NOTIFICATION SENT]
+              Service now available
+              for cost planning
+```
+
+### Key Features
+
+**1. Strategic Intelligence**
+- Know what services AWS is building before public announcements
+- Track regional rollout patterns
+- Plan for new service adoption
+
+**2. Pending Service Monitoring**
+- Services not yet in your region are automatically tracked
+- Daily checks detect when they become available
+- Email notification sent when pending service arrives
+
+**3. Email Notifications**
+
+Two types of emails are sent:
+
+**Email 1: New Service Detected**
+```
+Subject: AWS Service Monitor: X New Service(s) Detected
+
+SCP Status: ✅ Added to blacklist (immediately)
+
+Regional Status (eu-west-2):
+  Available in eu-west-2: 2/3
+  Pending eu-west-2 deployment: 1/3
+
+Services:
+  - bedrock-agents (Available now)
+  - sagemaker-canvas (Pending eu-west-2)
+  - transcribe-streaming (Available now)
+```
+
+**Email 2: Service Now Available in Region** (sent later when pending service arrives)
+```
+Subject: ✅ AWS Service Now Available in eu-west-2: sagemaker-canvas
+
+Service sagemaker-canvas is now available in your region.
+
+Status: Service is already protected by SCP (added on detection date)
+Date Available: 2026-06-26 08:15 UTC
+
+This is for cost tracking and operational planning purposes.
+No SCP changes are needed - the service has been blocked since first detection.
+```
+
+### Configuration
+
+Regional monitoring is enabled by default. To customize:
+
+#### Enable/Disable Regional Monitoring
+
+```python
+# In lambda/index.py environment (set via Terraform):
+ENABLE_REGIONAL_MONITORING = "true"  # Set to "false" to disable
+MONITORED_REGION = "eu-west-2"      # Change to monitor different region
+```
+
+#### Monitor Different Region
+
+To monitor a different region (e.g., us-east-1):
+
+```hcl
+# In Terraform, update Lambda environment:
+environment {
+  variables = {
+    MONITORED_REGION = "us-east-1"
+  }
+}
+```
+
+**Note**: Regional monitoring requires DynamoDB access and boto3 service endpoint checking.
+
+### Data Storage
+
+Pending services are tracked in `aws-service-monitor-pending-regional` DynamoDB table:
+
+| Field | Purpose |
+|-------|---------|
+| `service_name` | Service identifier (partition key) |
+| `detected_at` | When service was detected globally (sort key) |
+| `first_detected_at` | First detection timestamp |
+| `region_name` | Target region (e.g., "eu-west-2") |
+| `available_in_region` | Boolean: 0=not available, 1=available |
+| `last_checked_at` | Most recent availability check |
+| `available_at` | When service became available in region |
+| `notification_sent` | Boolean: whether alert was sent |
+
+**Access Pattern**: Query by `region_name` and `available_in_region` to find pending services for daily monitoring.
+
+### Core Functions
+
+**Check Regional Availability**
+```python
+def check_regional_availability(services: List[str], region: str = 'eu-west-2') -> Dict:
+    """
+    Check if services are available in a region.
+    Returns dict: {'service_name': {'available_in_region': bool, 'checked_at': timestamp}}
+    """
+```
+
+**Track for Monitoring**
+```python
+def track_service_for_regional_monitoring(service_name: str, region: str, detected_at: str) -> bool:
+    """Record service in pending table for daily monitoring."""
+```
+
+**Daily Monitoring Check**
+```python
+def check_pending_regional_services(timestamp: str) -> Dict:
+    """
+    Run daily to check if pending services have become available.
+    Returns: {'available': [...], 'still_pending': [...], 'errors': [...]}
+    """
+```
+
+**Send Region Available Alert**
+```python
+def send_regional_availability_notification(service_name: str, timestamp: str) -> bool:
+    """Send email when pending service becomes available in region."""
+```
+
+### Testing Regional Monitoring
+
+#### 1. Test Regional Availability Check
+
+```python
+import json
+from lambda.index import check_regional_availability
+
+# Check if services are available in eu-west-2
+services = ['s3', 'lambda', 'bedrock']
+result = check_regional_availability(services, region='eu-west-2')
+
+for service, status in result.items():
+    print(f"{service}: {status['available_in_region']}")
+```
+
+#### 2. Test Pending Service Tracking
+
+```python
+from lambda.index import track_service_for_regional_monitoring
+
+# Track a service as pending
+success = track_service_for_regional_monitoring(
+    service_name='test-service',
+    region='eu-west-2',
+    detected_at='2026-06-11T08:15:33Z'
+)
+
+print(f"Tracked: {success}")
+
+# Verify in DynamoDB
+aws dynamodb get-item \
+  --table-name aws-service-monitor-pending-regional \
+  --key '{"service_name":{"S":"test-service"},"detected_at":{"S":"2026-06-11T08:15:33Z"}}'
+```
+
+#### 3. Test Daily Monitoring
+
+```python
+from lambda.index import check_pending_regional_services
+from datetime import datetime
+
+# Run pending service check
+timestamp = datetime.utcnow().isoformat()
+summary = check_pending_regional_services(timestamp)
+
+print(f"Available: {summary['available']}")
+print(f"Still pending: {summary['still_pending']}")
+print(f"Errors: {summary['errors']}")
+```
+
+#### 4. Integration Test: Full Flow
+
+```bash
+# 1. Deploy to test account
+terraform apply -var-file=test.tfvars
+
+# 2. Invoke Lambda manually
+aws lambda invoke \
+  --function-name aws-service-monitor \
+  --region eu-west-2 \
+  response.json
+
+# 3. Check CloudWatch logs for regional monitoring activity
+aws logs tail /aws/lambda/aws-service-monitor --follow --since 5m
+
+# Expected log output:
+# INFO: === CHECKING PENDING REGIONAL SERVICES ===
+# INFO: Checking 3 pending services for regional availability
+# INFO: Service bedrock-agents is now available in eu-west-2
+# INFO: Sent regional availability notification for bedrock-agents
+```
+
+#### 5. Query Pending Services
+
+```bash
+# Find all services pending in eu-west-2
+aws dynamodb query \
+  --table-name aws-service-monitor-pending-regional \
+  --index-name region-name-index \
+  --key-condition-expression 'region_name = :region AND available_in_region = :available' \
+  --expression-attribute-values '{
+    ":region":{"S":"eu-west-2"},
+    ":available":{"N":"0"}
+  }' \
+  --region eu-west-2
+```
+
+### Troubleshooting
+
+#### Services Not Being Tracked as Pending
+
+**Symptoms**: Regional status email section shows 0 pending services
+
+**Check**:
+1. Verify `ENABLE_REGIONAL_MONITORING = "true"` in Lambda environment
+2. Check Lambda logs for regional availability check errors
+3. Verify `pending_regional_services` table exists: `aws dynamodb describe-table --table-name aws-service-monitor-pending-regional`
+
+**Solution**: Ensure new services are actually unavailable in the region. Some services may be available globally in all regions.
+
+#### Regional Availability Notification Not Sent
+
+**Symptoms**: Service becomes available in region but no email received
+
+**Check**:
+1. Verify `PENDING_REGIONAL_SERVICES_TABLE` is set correctly
+2. Check Lambda logs for notification sending errors
+3. Verify email addresses are verified in SES
+
+**Solution**: 
+```bash
+# Check pending service status in DynamoDB
+aws dynamodb get-item \
+  --table-name aws-service-monitor-pending-regional \
+  --key '{"service_name":{"S":"service-name"},"detected_at":{"S":"timestamp"}}'
+
+# Check notification_sent field - should be true if notified
+```
+
+#### Regional Availability Check Failing
+
+**Symptoms**: Lambda logs show regional availability check errors
+
+**Check**:
+1. Lambda has permissions to call boto3 (should be automatic)
+2. boto3 service model is available for the service
+
+**Solution**: Regional checks are graceful - if boto3 check fails, service defaults to "not available" and is tracked for monitoring.
+
+### Performance Considerations
+
+**Regional Availability Checking**
+- Boto3 client creation: ~50-100ms per service
+- For 100 new services: ~5-10 seconds total
+- Checks are performed in serial (not parallel) to avoid rate limiting
+
+**DynamoDB Operations**
+- Pending service tracking: 1 write per service (billed as single write)
+- Daily monitoring queries: 1 query + updates (on-demand billing)
+- Expected cost: <$1/month for typical deployments
+
+**Recommendations**
+- Keep `ENABLE_REGIONAL_MONITORING = true` (minimal overhead)
+- Regional checks run in series with other Lambda operations
+- No additional Lambda memory or timeout needed
+
+### Advanced Customization
+
+#### Change Email Template for Regional Status
+
+Edit `generate_html_email()` and `generate_text_email()` in `lambda/index.py`:
+
+```python
+def generate_html_email(services, timestamp, scp_status, regional_status):
+    # Customize how regional status appears in email
+    if regional_status:
+        available_count = sum(1 for s in regional_status.values() 
+                             if s['available_in_region'])
+        # Add custom HTML section here
+```
+
+#### Filter Services from Regional Monitoring
+
+To exclude certain services from pending tracking:
+
+```python
+def track_service_for_regional_monitoring(service_name, region, detected_at):
+    # Skip services that shouldn't be monitored
+    excluded = {'s3', 'iam', 'cloudfront'}
+    if service_name in excluded:
+        return True
+    
+    # Continue with normal tracking...
+```
+
+#### Change Regional Availability Check Logic
+
+Replace boto3 logic with custom endpoint check:
+
+```python
+def check_regional_availability(services, region='eu-west-2'):
+    # Custom logic: check AWS API endpoints, SSM parameters, etc.
+    # Example: Check if service endpoint exists in target region
+    result = {}
+    for service in services:
+        available = custom_check_service_in_region(service, region)
+        result[service] = {
+            'available_in_region': available,
+            'checked_at': datetime.utcnow().isoformat()
+        }
+    return result
+```
+
+### Related Documentation
+
+- [Operational Runbooks](./runbooks/) - Procedures for managing pending services
+- [SERVICE_APPROVAL_MANAGEMENT.md](./runbooks/SERVICE_APPROVAL_MANAGEMENT.md) - Approval workflow guide
+- [ARCHITECTURE.md](./ARCHITECTURE.md) - System design and data flow
+- [TESTING_GUIDE.md](./TESTING_GUIDE.md) - Manual testing procedures
+
 ## Related Documentation
 
 - [AWS Lambda Documentation](https://docs.aws.amazon.com/lambda/)
