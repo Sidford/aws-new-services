@@ -995,13 +995,13 @@ Dashboard: https://console.aws.amazon.com/cloudwatch/home?region={os.environ.get
         return False
 
 
-def send_notification_email(new_services: List[str], scp_status: str = 'unknown') -> bool:
+def send_notification_email(new_services: List[str], scp_status: str = 'unknown', regional_status: Dict = None) -> bool:
     """Send formatted email notification about new services."""
     try:
         timestamp = datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S UTC')
 
-        html_body = generate_html_email(new_services, timestamp, scp_status)
-        text_body = generate_text_email(new_services, timestamp, scp_status)
+        html_body = generate_html_email(new_services, timestamp, scp_status, regional_status)
+        text_body = generate_text_email(new_services, timestamp, scp_status, regional_status)
 
         subject = f'AWS Service Monitor: {len(new_services)} New Service(s) Detected'
 
@@ -1048,11 +1048,30 @@ def get_scp_status_message(status: str) -> Tuple[str, str]:
     return status_messages.get(status, status_messages['unknown'])
 
 
-def generate_html_email(services: List[str], timestamp: str, scp_status: str = 'unknown') -> str:
-    """Generate formatted HTML email with proper escaping."""
+def generate_html_email(services: List[str], timestamp: str, scp_status: str = 'unknown', regional_status: Dict = None) -> str:
+    """Generate formatted HTML email with proper escaping and regional status."""
     from html import escape
     services_html = '\n'.join([f'                <li>{escape(service)}</li>' for service in sorted(services)])
     status_title, status_message = get_scp_status_message(scp_status)
+
+    # Generate regional status section
+    regional_html = ""
+    if regional_status and ENABLE_REGIONAL_MONITORING:
+        available_count = sum(1 for s in regional_status.values() if s['available_in_region'])
+        pending_count = len(regional_status) - available_count
+
+        if pending_count > 0:
+            regional_html = f"""
+                <div class="status-box" style="border-left-color: #17a2b8;">
+                    <div class="status-title">Regional Status ({MONITORED_REGION})</div>
+                    <p><strong>Available in {MONITORED_REGION}:</strong> {available_count}/{len(regional_status)}</p>
+                    <p><strong>Pending {MONITORED_REGION} deployment:</strong> {pending_count}/{len(regional_status)}</p>
+                    <p style="color: #666; font-size: 12px;">
+                        Monitoring: Services not yet available in {MONITORED_REGION} will be tracked daily.
+                        You will be notified when they become available for cost planning and operational purposes.
+                    </p>
+                </div>
+                """
 
     html = f"""
     <html>
@@ -1088,6 +1107,8 @@ def generate_html_email(services: List[str], timestamp: str, scp_status: str = '
                     <p>{status_message}</p>
                 </div>
 
+                {regional_html}
+
                 <div class="service-list">
                     <h3>New Services:</h3>
                     <ul>
@@ -1099,9 +1120,16 @@ def generate_html_email(services: List[str], timestamp: str, scp_status: str = '
                 <ul>
                     <li>✓ Service names validated</li>
                     <li>✓ Service registry updated in DynamoDB</li>
-                    <li>✓ SCP change preview generated</li>
+                    <li>✓ All services IMMEDIATELY added to SCP blacklist</li>
+                    <li>✓ Regional availability checked (intelligence only)</li>
                     <li>✓ Notification email sent</li>
                 </ul>
+
+                <p><strong>Security Note:</strong></p>
+                <p style="font-size: 12px; color: #666;">
+                    All new AWS services are immediately blocked via Service Control Policy as a cautious-by-default approach.
+                    Services are monitored for regional availability in {MONITORED_REGION} for operational planning purposes.
+                </p>
 
                 <p><strong>Next Steps:</strong></p>
                 <ul>
@@ -1124,10 +1152,26 @@ def generate_html_email(services: List[str], timestamp: str, scp_status: str = '
     return html
 
 
-def generate_text_email(services: List[str], timestamp: str, scp_status: str = 'unknown') -> str:
-    """Generate plain text email with proper escaping."""
+def generate_text_email(services: List[str], timestamp: str, scp_status: str = 'unknown', regional_status: Dict = None) -> str:
+    """Generate plain text email with regional status."""
     services_text = '\n'.join([f'  - {service}' for service in sorted(services)])
     status_title, status_message = get_scp_status_message(scp_status)
+
+    # Generate regional status section
+    regional_text = ""
+    if regional_status and ENABLE_REGIONAL_MONITORING:
+        available_count = sum(1 for s in regional_status.values() if s['available_in_region'])
+        pending_count = len(regional_status) - available_count
+
+        if pending_count > 0:
+            regional_text = f"""
+REGIONAL STATUS ({MONITORED_REGION}):
+  Available in {MONITORED_REGION}: {available_count}/{len(regional_status)}
+  Pending {MONITORED_REGION} deployment: {pending_count}/{len(regional_status)}
+
+  Monitoring: Services not yet available in {MONITORED_REGION} will be tracked daily.
+  You will be notified when they become available for cost planning and operational purposes.
+"""
 
     text = f"""AWS SERVICE MONITOR ALERT
 {"="*50}
@@ -1141,12 +1185,19 @@ STATUS: {status_title}
 
 NEW SERVICES:
 {services_text}
+{regional_text}
 
 ACTIONS TAKEN:
   ✓ Service names validated
   ✓ Service registry updated in DynamoDB
-  ✓ SCP change preview generated
+  ✓ All services IMMEDIATELY added to SCP blacklist
+  ✓ Regional availability checked (intelligence only)
   ✓ Notification email sent
+
+SECURITY NOTE:
+  All new AWS services are immediately blocked via Service Control Policy as a cautious-by-default
+  approach. Services are monitored for regional availability in {MONITORED_REGION} for operational
+  planning purposes.
 
 NEXT STEPS:
   - Review the new services in the SCP
@@ -1397,6 +1448,15 @@ def lambda_handler(event, context):
                 })
             }
 
+        # CHECK PENDING REGIONAL SERVICES (daily monitoring)
+        if ENABLE_REGIONAL_MONITORING:
+            logger.info("=== CHECKING PENDING REGIONAL SERVICES ===")
+            pending_summary = check_pending_regional_services(start_time)
+            if pending_summary['available']:
+                logger.info(f"Services now available in {MONITORED_REGION}: {pending_summary['available']}")
+            if pending_summary['errors']:
+                logger.warning(f"Errors checking pending services: {pending_summary['errors']}")
+
         # Get previously tracked services (baseline is initialized and verified)
         tracked_services = get_tracked_services()
 
@@ -1430,6 +1490,18 @@ def lambda_handler(event, context):
             # Store new services in DynamoDB and update checksum to prevent false tamper alerts
             store_new_services(new_services_list)
             update_baseline_checksum(tracked_services | set(new_services_list))
+
+            # CHECK REGIONAL AVAILABILITY (intelligence only - not for SCP gating)
+            regional_status = {}
+            if ENABLE_REGIONAL_MONITORING:
+                logger.info(f"Checking regional availability for {len(new_services_list)} new services in {MONITORED_REGION}")
+                regional_status = check_regional_availability(new_services_list, region=MONITORED_REGION)
+
+                # Track services not yet available in region for monitoring
+                for service in new_services_list:
+                    if not regional_status[service]['available_in_region']:
+                        track_service_for_regional_monitoring(service, MONITORED_REGION, start_time)
+                        logger.info(f"Service '{service}' NOT available in {MONITORED_REGION} - tracking for future availability")
 
             # Filter out approved services — they are tracked but not added to the SCP deny list
             approved_services = get_approved_services()
@@ -1474,7 +1546,7 @@ def lambda_handler(event, context):
                 scp_update_status = 'disabled'
 
             # Send notification email (always enabled)
-            send_notification_email(new_services_list, scp_update_status)
+            send_notification_email(new_services_list, scp_update_status, regional_status)
 
             # Publish metrics for dashboard and alarms
             publish_metrics(len(new_services_list), len(tracked_services) + len(new_services_list), True)
