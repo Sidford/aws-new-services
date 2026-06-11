@@ -22,6 +22,7 @@ sns = boto3.client('sns')
 
 DYNAMODB_TABLE = os.environ['DYNAMODB_TABLE']
 APPROVED_SERVICES_TABLE = os.environ.get('APPROVED_SERVICES_TABLE', '')
+PENDING_REGIONAL_SERVICES_TABLE = os.environ.get('PENDING_REGIONAL_SERVICES_TABLE', '')
 SCP_NAME = os.environ['SCP_NAME']
 EMAIL_RECIPIENTS = json.loads(os.environ['EMAIL_RECIPIENTS'])
 SENDER_EMAIL = os.environ['SENDER_EMAIL']
@@ -32,6 +33,8 @@ ALERT_TOPIC_ARN = os.environ.get('ALERT_TOPIC_ARN', '')
 ENABLE_SERVICE_APPROVAL_WORKFLOW = os.environ.get('ENABLE_SERVICE_APPROVAL_WORKFLOW', 'true').lower() == 'true'
 APPROVED_SERVICES_LIST = json.loads(os.environ.get('APPROVED_SERVICES_LIST', '[]'))
 APPROVAL_RECIPIENTS = json.loads(os.environ.get('APPROVAL_RECIPIENTS', '[]'))
+ENABLE_REGIONAL_MONITORING = os.environ.get('ENABLE_REGIONAL_MONITORING', 'true').lower() == 'true'
+MONITORED_REGION = os.environ.get('MONITORED_REGION', 'eu-west-2')
 
 SERVICE_REFERENCE_URL = "https://servicereference.us-east-1.amazonaws.com/"
 SERVICE_NAME_PATTERN = re.compile(r'^[a-z0-9\-]+$')
@@ -80,6 +83,275 @@ def calculate_baseline_checksum(services: Set[str]) -> str:
     checksum = hashlib.sha256(service_string.encode()).hexdigest()
     logger.debug(f"Calculated baseline checksum: {checksum}")
     return checksum
+
+
+def check_regional_availability(services: List[str], region: str = 'eu-west-2') -> Dict:
+    """
+    Check if services are available in a specific region.
+    Returns dict: {
+        'service_name': {
+            'available_in_region': bool,
+            'checked_at': timestamp
+        }
+    }
+
+    This is intelligence only - used for notifications and monitoring,
+    NOT for SCP gating.
+    """
+    timestamp = datetime.utcnow().isoformat()
+    result = {}
+
+    try:
+        # Check each service for regional availability
+        for service in services:
+            try:
+                # Try to create a boto3 client for this service in the target region
+                # If successful, service is likely available
+                client = boto3.client(service, region_name=region)
+                available = True
+            except Exception as e:
+                logger.debug(f"Service {service} not available in {region}: {str(e)}")
+                available = False
+
+            result[service] = {
+                'available_in_region': available,
+                'checked_at': timestamp
+            }
+
+        return result
+
+    except Exception as e:
+        logger.error(f"Error checking regional availability: {str(e)}")
+        # Fail safe: assume all unavailable if check fails
+        return {
+            service: {'available_in_region': False, 'checked_at': timestamp}
+            for service in services
+        }
+
+
+def track_service_for_regional_monitoring(
+    service_name: str,
+    region: str,
+    detected_at: str
+) -> bool:
+    """
+    Add service to pending_regional_services table for monitoring.
+    This table is purely for intelligence/awareness - tracks when services
+    become available in specific regions for operational planning.
+    """
+    if not PENDING_REGIONAL_SERVICES_TABLE:
+        logger.debug("PENDING_REGIONAL_SERVICES_TABLE not configured, skipping tracking")
+        return True
+
+    try:
+        table = dynamodb.Table(PENDING_REGIONAL_SERVICES_TABLE)
+        timestamp = datetime.utcnow().isoformat()
+
+        table.put_item(
+            Item={
+                'service_name': service_name,
+                'detected_at': detected_at,
+                'first_detected_at': detected_at,
+                'region_name': region,
+                'available_in_region': 0,  # 0 = False for GSI
+                'last_checked_at': timestamp,
+                'notification_sent': False
+            },
+            ConditionExpression='attribute_not_exists(service_name)'
+        )
+
+        logger.info(f"Tracking {service_name} for regional availability in {region}")
+        return True
+
+    except Exception as e:
+        if 'ConditionalCheckFailedException' in str(type(e).__name__):
+            logger.debug(f"Service {service_name} already tracked for regional monitoring")
+            return True
+        logger.error(f"Error tracking service for regional monitoring: {str(e)}")
+        return False
+
+
+def check_pending_regional_services(timestamp: str) -> Dict:
+    """
+    Daily monitoring: Check if pending services have become available.
+    Called as part of normal lambda_handler execution.
+
+    Returns: {
+        'available': [service_names],
+        'still_pending': [service_names],
+        'errors': [...]
+    }
+    """
+    if not PENDING_REGIONAL_SERVICES_TABLE or not ENABLE_REGIONAL_MONITORING:
+        return {'available': [], 'still_pending': [], 'errors': []}
+
+    try:
+        table = dynamodb.Table(PENDING_REGIONAL_SERVICES_TABLE)
+        region = MONITORED_REGION
+
+        # Query: Get all services NOT yet available in region
+        response = table.query(
+            IndexName='region-name-index',
+            KeyConditionExpression='region_name = :region AND available_in_region = :available',
+            ExpressionAttributeValues={
+                ':region': region,
+                ':available': 0  # 0 = not available yet
+            }
+        )
+
+        pending_services = response.get('Items', [])
+
+        if not pending_services:
+            logger.info("No pending regional services to check")
+            return {'available': [], 'still_pending': [], 'errors': []}
+
+        logger.info(f"Checking {len(pending_services)} pending services for regional availability")
+
+        # Get list of service names
+        pending_names = [item['service_name'] for item in pending_services]
+
+        # Check each service
+        regional_status = check_regional_availability(pending_names, region=region)
+
+        summary = {'available': [], 'still_pending': [], 'errors': []}
+
+        # Process results
+        for service_item in pending_services:
+            service_name = service_item['service_name']
+            detected_at = service_item['detected_at']
+
+            if regional_status[service_name]['available_in_region']:
+                # Service is now available!
+                try:
+                    check_time = datetime.utcnow().isoformat()
+
+                    # Update table to mark as available
+                    table.update_item(
+                        Key={
+                            'service_name': service_name,
+                            'detected_at': detected_at
+                        },
+                        UpdateExpression='SET available_in_region = :avail, available_at = :ts, last_checked_at = :checked',
+                        ExpressionAttributeValues={
+                            ':avail': 1,  # 1 = True
+                            ':ts': check_time,
+                            ':checked': check_time
+                        }
+                    )
+
+                    # Send notification (via email)
+                    if service_item.get('notification_sent') is not True:
+                        send_regional_availability_notification(service_name, check_time)
+                        # Mark notification as sent
+                        table.update_item(
+                            Key={
+                                'service_name': service_name,
+                                'detected_at': detected_at
+                            },
+                            UpdateExpression='SET notification_sent = :sent',
+                            ExpressionAttributeValues={':sent': True}
+                        )
+
+                    logger.info(f"Service {service_name} is now available in {region}")
+                    summary['available'].append(service_name)
+
+                except Exception as e:
+                    logger.error(f"Error updating service {service_name}: {str(e)}")
+                    summary['errors'].append({'service': service_name, 'error': str(e)})
+            else:
+                # Still pending
+                try:
+                    # Update last checked time
+                    table.update_item(
+                        Key={
+                            'service_name': service_name,
+                            'detected_at': detected_at
+                        },
+                        UpdateExpression='SET last_checked_at = :ts',
+                        ExpressionAttributeValues={':ts': datetime.utcnow().isoformat()}
+                    )
+                    summary['still_pending'].append(service_name)
+                except Exception as e:
+                    logger.error(f"Error updating last_checked_at for {service_name}: {str(e)}")
+                    summary['errors'].append({'service': service_name, 'error': str(e)})
+
+        return summary
+
+    except Exception as e:
+        logger.error(f"Error checking pending regional services: {str(e)}")
+        return {'available': [], 'still_pending': [], 'errors': [str(e)]}
+
+
+def send_regional_availability_notification(service_name: str, timestamp: str) -> bool:
+    """
+    Send notification when a pending service becomes available in region.
+    This is intelligence/awareness only - service is already blocked by SCP.
+    """
+    try:
+        html_body = f"""
+        <html>
+        <head>
+            <style>
+                body {{ font-family: Arial, sans-serif; color: #333; }}
+                .alert {{ background: #d4edda; border: 1px solid #c3e6cb; padding: 15px; border-radius: 5px; margin: 10px 0; }}
+                .container {{ max-width: 600px; margin: 0 auto; padding: 20px; }}
+            </style>
+        </head>
+        <body>
+            <div class="container">
+                <div class="alert">
+                    <h2>✅ Service Now Available in Region: {MONITORED_REGION}</h2>
+                    <p><strong>{html.escape(service_name)}</strong> is now available in your region.</p>
+                    <p><strong>Status:</strong> Service is already protected by SCP (added on detection date)</p>
+                    <p><strong>Date Available:</strong> {timestamp}</p>
+                    <p style="font-size: 12px; color: #666;">
+                        This is for cost tracking and operational planning purposes.
+                        No SCP changes are needed - the service has been blocked since first detection.
+                    </p>
+                </div>
+            </div>
+        </body>
+        </html>
+        """
+
+        text_body = f"""
+✅ Service Now Available in Region: {MONITORED_REGION}
+
+{service_name} is now available in your region.
+
+Status: Service is already protected by SCP (added on detection date)
+Date Available: {timestamp}
+
+This is for cost tracking and operational planning purposes.
+No SCP changes are needed - the service has been blocked since first detection.
+        """
+
+        for recipient in EMAIL_RECIPIENTS:
+            try:
+                ses.send_email(
+                    Source=SENDER_EMAIL,
+                    Destination={'ToAddresses': [recipient]},
+                    Message={
+                        'Subject': {
+                            'Data': f'✅ AWS Service Now Available in {MONITORED_REGION}: {service_name}',
+                            'Charset': 'UTF-8'
+                        },
+                        'Body': {
+                            'Text': {'Data': text_body, 'Charset': 'UTF-8'},
+                            'Html': {'Data': html_body, 'Charset': 'UTF-8'}
+                        }
+                    }
+                )
+            except Exception as e:
+                logger.error(f"Error sending email to {recipient}: {str(e)}")
+                return False
+
+        logger.info(f"Sent regional availability notification for {service_name}")
+        return True
+
+    except Exception as e:
+        logger.error(f"Error sending regional availability notification: {str(e)}")
+        return False
 
 
 def store_baseline_snapshot(services: Set[str], checksum: str, timestamp: str) -> bool:
