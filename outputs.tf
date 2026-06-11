@@ -42,3 +42,13 @@ output "cloudwatch_dashboard_url" {
   description = "URL to the CloudWatch Dashboard"
   value       = "https://console.aws.amazon.com/cloudwatch/home?region=${var.aws_region}#dashboards:name=aws-service-monitor"
 }
+
+output "pending_regional_services_table" {
+  description = "DynamoDB table for tracking services pending regional availability"
+  value       = aws_dynamodb_table.pending_regional_services.name
+}
+
+output "monitored_region" {
+  description = "AWS region being monitored for new service availability"
+  value       = "eu-west-2"
+}
