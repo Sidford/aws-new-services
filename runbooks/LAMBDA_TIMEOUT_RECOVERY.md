@@ -156,6 +156,7 @@ aws organizations describe-policy \
 # Current: 512MB
 # Update to: 1024MB
 
+cd terraform
 terraform apply -var="lambda_memory=1024"
 # OR manually via console:
 # Lambda > aws-service-monitor > Configuration > General > Memory: 1024
@@ -172,6 +173,7 @@ terraform apply -var="lambda_memory=1024"
 # Current: 300 seconds
 # Update to: 600 seconds
 
+cd terraform
 terraform apply -var="lambda_timeout=600"
 # OR manually via console:
 # Lambda > Configuration > General > Timeout: 600

@@ -202,6 +202,7 @@ aws dynamodb delete-table \
 sleep 30
 
 # Recreate via Terraform
+cd terraform
 terraform apply
 ```
 

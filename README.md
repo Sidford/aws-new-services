@@ -53,10 +53,10 @@ aws ses list-verified-email-addresses
 
 ```bash
 # Copy example configuration
-cp terraform.tfvars.example terraform.tfvars
+cp terraform/terraform.tfvars.example terraform/terraform.tfvars
 
 # Edit with your settings
-vim terraform.tfvars
+vim terraform/terraform.tfvars
 ```
 
 **Key Settings**:
@@ -70,6 +70,8 @@ sender_email     = "aws-monitor@example.com"
 ### 3️⃣ Deploy
 
 ```bash
+cd terraform
+
 terraform init
 terraform plan
 terraform apply

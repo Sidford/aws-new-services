@@ -6,18 +6,33 @@ This guide covers customizing and extending the AWS Service Monitor.
 
 ```
 .
-├── providers.tf                    # AWS provider configuration
-├── variables.tf                    # Variable definitions
-├── main.tf                        # Main Terraform configuration
-├── outputs.tf                     # Output definitions
-├── terraform.tfvars.example       # Example variable values
+├── terraform/                      # Infrastructure as Code
+│   ├── providers.tf               # AWS provider configuration
+│   ├── variables.tf               # Variable definitions
+│   ├── main.tf                    # Main Terraform configuration
+│   ├── outputs.tf                 # Output definitions
+│   ├── backend.tf                 # S3 remote state configuration
+│   ├── terraform.tfvars.example   # Example variable values
+│   ├── README.md                  # Terraform documentation
+│   ├── modules/                   # Reusable modules
+│   │   ├── dynamodb/             # DynamoDB tables
+│   │   ├── storage/              # S3 baseline storage
+│   │   ├── notifications/        # SNS notifications
+│   │   ├── iam/                  # IAM roles & policies
+│   │   ├── lambda/               # Lambda configuration
+│   │   ├── events/               # EventBridge rules
+│   │   ├── monitoring/           # CloudWatch alarms
+│   │   └── iam-scp-events/      # SCP change tracking
+│   └── bootstrap/                 # One-time backend setup
+│       └── README.md              # Bootstrap instructions
 ├── lambda/
 │   ├── index.py                   # Lambda handler function
 │   └── requirements.txt           # Python dependencies
+├── docs/                           # Documentation
+├── runbooks/                       # Operational runbooks
 ├── example-blacklist-policy.json  # Example SCP policy
 ├── README.md                      # Project overview
-├── DEPLOYMENT_GUIDE.md            # Deployment instructions
-└── DEVELOPMENT.md                 # This file
+└── CLAUDE.md                      # Claude Code guidance
 ```
 
 ## Lambda Function Customization
@@ -194,6 +209,8 @@ print(json.dumps(result, indent=2))
 Use a development or staging account first:
 
 ```bash
+cd terraform
+
 export AWS_PROFILE=staging
 terraform init
 terraform plan
