@@ -385,6 +385,7 @@ aws lambda update-function-configuration \
   --region eu-west-2
 
 # Or re-deploy with Terraform
+cd terraform
 terraform apply -var-file=terraform.tfvars
 ```
 

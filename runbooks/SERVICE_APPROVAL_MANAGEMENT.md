@@ -88,8 +88,8 @@ curl -s https://servicereference.eu-west-2.amazonaws.com/ | jq '.services."servi
 Update your terraform configuration:
 
 ```bash
-# Edit terraform.tfvars
-vim terraform.tfvars
+# Edit terraform/terraform.tfvars
+vim terraform/terraform.tfvars
 ```
 
 Add the service to the approved list:
@@ -109,6 +109,8 @@ approved_services = [
 Deploy the approval:
 
 ```bash
+cd terraform
+
 # Review changes
 terraform plan
 
@@ -136,7 +138,7 @@ aws dynamodb query \
   --expression-attribute-values '{":status":{"S":"approved"}}' \
   --region eu-west-2 | jq '.Items[] | select(.service_name.S == "example-service")'
 
-# Or check terraform state
+# Or check terraform state (from terraform directory)
 terraform state show aws_lambda_function.service_monitor | grep APPROVED_SERVICES_LIST
 ```
 
@@ -148,7 +150,7 @@ terraform state show aws_lambda_function.service_monitor | grep APPROVED_SERVICE
 
 ```bash
 # From terraform configuration
-grep -A 10 "approved_services = " terraform.tfvars
+grep -A 10 "approved_services = " terraform/terraform.tfvars
 
 # Or from Lambda environment
 aws lambda get-function \
@@ -194,14 +196,14 @@ SERVICES_TO_APPROVE=(
   "service-3"
 )
 
-# Add to terraform.tfvars
-EXISTING_SERVICES=$(grep "approved_services = " terraform.tfvars | sed 's/approved_services = //')
+# Add to terraform/terraform.tfvars
+EXISTING_SERVICES=$(grep "approved_services = " terraform/terraform.tfvars | sed 's/approved_services = //')
 
 for service in "${SERVICES_TO_APPROVE[@]}"; do
   echo "Approving: $service"
 done
 
-# Manual step: Edit terraform.tfvars with new services
+# Manual step: Edit terraform/terraform.tfvars with new services
 # Then: terraform apply
 ```
 
@@ -248,7 +250,7 @@ aws logs filter-log-events \
 
 ### Enable/Disable Approval Workflow
 
-In `terraform.tfvars`:
+In `terraform/terraform.tfvars`:
 
 ```hcl
 # Enable approval workflow (sends approval request emails)
@@ -343,7 +345,7 @@ aws dynamodb update-item \
   --expression-attribute-values '{":status":{"S":"approved"},":now":{"S":"2026-04-29T08:15:33Z"}}' \
   --region eu-west-2
 
-# 3. Add to approved_services list in terraform.tfvars
+# 3. Add to approved_services list in terraform/terraform.tfvars
 # 4. Run terraform apply
 ```
 
@@ -354,10 +356,10 @@ aws dynamodb update-item \
 ✅ **DO:**
 - Review all new services before approving
 - Require security team sign-off for approvals
-- Document approval decisions (comments in terraform.tfvars)
+- Document approval decisions (comments in terraform/terraform.tfvars)
 - Use separate approval_recipients for better control
 - Audit approval history regularly
-- Version control terraform.tfvars changes
+- Version control terraform/terraform.tfvars changes
 
 ❌ **DON'T:**
 - Approve services without understanding their purpose
@@ -391,7 +393,7 @@ New Service Detected
 | Task | Command |
 |------|---------|
 | View pending approvals | `aws dynamodb query --table-name aws-service-monitor-approved-services --index-name approval-status-index --key-condition-expression "approval_status = :status" --expression-attribute-values '{":status":{"S":"pending"}}' --region eu-west-2` |
-| Add approved service | Edit `terraform.tfvars`, add to `approved_services` list, run `terraform apply` |
+| Add approved service | Edit `terraform/terraform.tfvars`, add to `approved_services` list, run `terraform apply` |
 | Check approval status | `aws dynamodb get-item --table-name aws-service-monitor-approved-services --key '{"service_name":{"S":"service-name"}}' --region eu-west-2` |
 | View recent approvals | `aws logs filter-log-events --log-group-name /aws/lambda/aws-service-monitor --filter-pattern "approval" --region eu-west-2` |
 | Trigger manual scan | `aws lambda invoke --function-name aws-service-monitor --region eu-west-2 response.json` |

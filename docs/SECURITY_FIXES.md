@@ -492,6 +492,7 @@ require_scp_approval = false
 ```bash
 cd /path/to/aws-new-services
 git pull origin claude/aws-service-monitor-scp-bW4EY
+cd terraform
 terraform plan
 terraform apply
 ```
@@ -528,6 +529,7 @@ If issues occur, rollback is safe:
 
 ```bash
 git revert HEAD
+cd terraform
 terraform plan
 terraform apply
 ```
