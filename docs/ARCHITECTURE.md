@@ -240,6 +240,230 @@ graph LR
 
 ---
 
+## Regional Availability Detection Architecture
+
+**Overview**: System for monitoring when new services become available in a target region (eu-west-2) for operational planning and early market intelligence.
+
+### Zero-Trust Regional Approach
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│ New Service Detected Globally (AWS Announces)              │
+│ Example: bedrock-agents (available in us-east-1, us-west-2) │
+└────────────────────┬────────────────────────────────────────┘
+                     │
+                     ├─→ [IMMEDIATE] Add to SCP Blacklist ✅
+                     │   (Cautious-by-default - all services blocked)
+                     │
+                     └─→ [CHECK] Regional Availability in eu-west-2
+                         │
+                         ├─→ Available in eu-west-2 (e.g., s3, lambda)
+                         │   └─→ Email: "Available now"
+                         │   └─→ NO pending tracking needed
+                         │
+                         └─→ NOT available in eu-west-2 (pending)
+                             └─→ Add to pending_regional_services table
+                             └─→ Email: "Pending eu-west-2 deployment"
+                             └─→ Start daily monitoring
+
+┌──────────────────────────────────────────────────┐
+│ Daily Monitoring (check_pending_regional_services) │
+└────────────────┬─────────────────────────────────┘
+                 │
+      ┌──────────┼──────────┐
+      │          │          │
+      ▼          ▼          ▼
+   Still      Now         Delisted
+   Pending    Available   Globally
+      │          │          │
+      │     [UPDATE]   [ARCHIVE]
+      │         │          │
+      │    [NOTIFY] ✉️      │
+      │     Email:    Archive
+      │  "Now avail.   Record
+      │   in region"
+      │
+   [Continue]
+   [Monitoring]
+   [Next Day]
+```
+
+### Data Flow: Regional Availability Checking
+
+```
+Lambda Handler (Daily Run)
+    │
+    ├─→ [1] Check Pending Services
+    │   ├─ Query pending_regional_services table
+    │   │  (region_name='eu-west-2' AND available_in_region=0)
+    │   │
+    │   ├─ For each pending service:
+    │   │  ├─ Call check_regional_availability()
+    │   │  ├─ Try boto3 service endpoint discovery
+    │   │  └─ Return: {available: bool}
+    │   │
+    │   └─ Update DynamoDB based on results:
+    │      ├─ If now available: Set available_in_region=1, available_at=<timestamp>
+    │      ├─ If still pending: Update last_checked_at
+    │      └─ If available: Send "now available" email via SES
+    │
+    ├─→ [2] Detect New Services (existing flow)
+    │   └─ Normal new service detection
+    │
+    ├─→ [3] Check Regional Status for New Services
+    │   ├─ call check_regional_availability(new_services)
+    │   ├─ For NOT available: track_service_for_regional_monitoring()
+    │   └─ Store in pending_regional_services table
+    │
+    ├─→ [4] Add All Services to SCP Immediately
+    │   └─ (Not gated by regional availability)
+    │
+    └─→ [5] Send Notification Email
+        ├─ Include SCP status: "Added ✅"
+        ├─ Include regional status: "Available: 2/3, Pending: 1/3"
+        └─ Send to EMAIL_RECIPIENTS
+```
+
+### Architecture Diagram
+
+```mermaid
+graph TB
+    subgraph "Daily Lambda Execution"
+        LH["Lambda Handler"]
+    end
+    
+    subgraph "Regional Monitoring"
+        CPS["check_pending_regional_services<br/>Query pending table"]
+        CRA["check_regional_availability<br/>boto3 endpoint check"]
+        TRM["track_service_for_regional_monitoring<br/>Record new pending services"]
+    end
+    
+    subgraph "Data Layer"
+        PENDING["pending_regional_services<br/>DynamoDB Table"]
+        SCP["SCP Blacklist<br/>Organizations"]
+    end
+    
+    subgraph "Notification"
+        EMAIL["send_regional_availability_notification<br/>Send 'Now Available' email"]
+    end
+    
+    LH -->|Query| PENDING
+    LH -->|Check pending| CPS
+    CPS -->|For each service| CRA
+    CRA -->|Not available| TRM
+    TRM -->|Write| PENDING
+    CRA -->|Now available| EMAIL
+    EMAIL -->|SES Send| EMAIL_OUT["SES → Email Recipients"]
+    
+    LH -->|New services| PENDING
+    LH -->|All services| SCP
+```
+
+### State Transitions
+
+**`pending_regional_services` Table States**:
+
+1. **Pending** (Initial State)
+   - Service detected globally
+   - Not available in target region yet
+   - `available_in_region = 0`
+   - Daily monitoring active
+
+2. **Available** (Transition)
+   - Service detected in target region
+   - Set `available_at` timestamp
+   - Send notification email
+   - `available_in_region = 1`
+   - Monitoring continues (for audit trail)
+
+3. **Archived** (Final State)
+   - Service delisted globally, or
+   - Manually removed from monitoring
+   - Record preserved for audit
+   - No further monitoring
+
+### Integration with SCP Management
+
+```
+┌─────────────────────────────────────┐
+│ New Service Detected Globally       │
+└────────────────┬────────────────────┘
+                 │
+        ┌────────┴────────┐
+        │                 │
+        ▼                 ▼
+    [Regional Check]  [SCP Update]
+    (Intelligence)     (Immediate)
+        │                 │
+    [Pending?]        ✅ ALWAYS
+        │              Add to SCP
+        ▼              (if unapproved)
+    [Track for         │
+    monitoring]        └─────┬──────┐
+        │                    │      │
+        └────────────────────┴──────┴─→ [Send Email]
+                                      "Added ✅ to SCP
+                                       Pending: eu-west-2"
+```
+
+**Key Points**:
+- Regional availability does **NOT** gate SCP updates
+- All services blocked immediately (cautious-by-default)
+- Regional status is purely informational
+- Pending services still protected (already in SCP since detection)
+
+### Query Patterns
+
+**Find All Pending Services**:
+```
+table.query(
+  IndexName='region-name-index',
+  KeyConditionExpression='region_name = :r AND available_in_region = :a',
+  ExpressionAttributeValues={
+    ':r': 'eu-west-2',
+    ':a': 0
+  }
+)
+```
+
+**Find Services by Region**:
+```
+table.query(
+  IndexName='region-name-index',
+  KeyConditionExpression='region_name = :r',
+  ExpressionAttributeValues={':r': 'eu-west-2'}
+)
+```
+
+**Find Service History**:
+```
+table.query(
+  KeyConditionExpression='service_name = :s',
+  ExpressionAttributeValues={':s': 'bedrock-agents'}
+)
+```
+
+### Performance Characteristics
+
+**Regional Availability Check**:
+- Per-service boto3 client creation: ~50-100ms
+- 100 services: ~5-10 seconds total
+- Runs in series (not parallel) to avoid API rate limits
+- Part of normal Lambda execution (no timeout risk)
+
+**DynamoDB Operations**:
+- Pending service tracking: 1 write per service
+- Daily monitoring: 1 query + N updates
+- On-demand billing: <$1/month typical
+- GSI efficient query: <10ms for common case
+
+**Email Notifications**:
+- Regional status section in email
+- Separate notification for "now available"
+- Minimal overhead to existing email system
+
+---
+
 ## Infrastructure Stack
 
 **IaC Resources**: All AWS resources managed by Terraform.
