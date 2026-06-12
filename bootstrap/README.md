@@ -13,7 +13,7 @@ terraform init
 
 2. Deploy the backend infrastructure (S3 bucket + DynamoDB table):
 ```bash
-AWS_PROFILE=sidford-mgmt terraform apply
+AWS_PROFILE=lza-management terraform apply
 ```
 
 3. Return to root and initialize with S3 backend:
@@ -25,17 +25,12 @@ terraform init
 
 ## Backend Features
 
-- **S3 Bucket**: Stores Terraform state
+- **S3 Bucket**: Stores Terraform state with native locking
   - Versioning enabled for state history
   - AES256 encryption enabled
   - Public access blocked
   - Object Lock (GOVERNANCE mode, 30-day retention) for WORM protection
-
-- **DynamoDB Table**: Manages state locking
-  - Prevents concurrent applies
-  - Point-in-time recovery enabled
-  - Server-side encryption enabled
-  - On-demand billing
+  - S3 native locking prevents concurrent applies
 
 ## Cleanup
 

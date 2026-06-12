@@ -28,26 +28,22 @@ This initializes Terraform with local state (safe, since this is temporary).
 ### Deploy Backend Resources
 
 ```bash
-AWS_PROFILE=sidford-mgmt terraform apply
+AWS_PROFILE=lza-management terraform apply
 ```
 
 When prompted, review the resources being created:
-- S3 bucket for Terraform state (with encryption, versioning, and object lock)
-- DynamoDB table for state locking
+- S3 bucket for Terraform state (with encryption, versioning, object lock, and native S3 locking)
 
 Type `yes` to confirm.
 
 ### Note the Outputs
 
-After successful deployment, note the outputs:
+After successful deployment, note the bucket name from the outputs. It's already configured in the root `backend.tf`:
 ```
 Outputs:
 
 tfstate_bucket = "aws-service-monitor-tfstate-556717286844-eu-west-2"
-tfstate_dynamodb_table = "aws-service-monitor-tfstate-lock"
 ```
-
-These values are already configured in the root `backend.tf`.
 
 ### Return to Root Directory
 
