@@ -3,6 +3,12 @@ variable "aws_account_id" {
   type        = string
 }
 
+variable "existing_role_id" {
+  description = "ID of existing Lambda IAM role (if provided, role creation is skipped)"
+  type        = string
+  default     = ""
+}
+
 variable "dynamodb_table_arns" {
   description = "Map of DynamoDB table ARNs"
   type = object({

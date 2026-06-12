@@ -10,17 +10,38 @@ resource "aws_cloudwatch_log_group" "lambda_logs" {
 }
 
 # ============================================================================
-# Module: DynamoDB (No dependencies)
+# Create Lambda Role First (Required by DynamoDB KMS policy)
+# ============================================================================
+# Temporary IAM role - will be updated with full policies later
+resource "aws_iam_role" "lambda_role_temp" {
+  name = "aws-service-monitor-lambda-role"
+
+  assume_role_policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Action = "sts:AssumeRole"
+        Effect = "Allow"
+        Principal = {
+          Service = "lambda.amazonaws.com"
+        }
+      }
+    ]
+  })
+
+  tags = var.tags
+}
+
+# ============================================================================
+# Module: DynamoDB (Depends on: Lambda role temp)
 # ============================================================================
 module "dynamodb" {
   source = "./modules/dynamodb"
 
   aws_region      = var.aws_region
   aws_account_id  = data.aws_caller_identity.current.account_id
-  lambda_role_arn = module.iam.lambda_role_arn
+  lambda_role_arn = aws_iam_role.lambda_role_temp.arn
   tags            = var.tags
-
-  depends_on = [module.iam]
 }
 
 # ============================================================================
@@ -59,12 +80,13 @@ module "iam_scp_events" {
 }
 
 # ============================================================================
-# Module: IAM (Depends on: DynamoDB, Storage, Notifications, Log Group)
+# Module: IAM (Depends on: DynamoDB, Storage, Notifications, Log Group, Lambda role temp)
 # ============================================================================
 module "iam" {
   source = "./modules/iam"
 
-  aws_account_id = data.aws_caller_identity.current.account_id
+  aws_account_id     = data.aws_caller_identity.current.account_id
+  existing_role_id   = aws_iam_role.lambda_role_temp.id
 
   dynamodb_table_arns = {
     service_registry          = module.dynamodb.service_registry_table_arn

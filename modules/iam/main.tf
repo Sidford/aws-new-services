@@ -1,3 +1,9 @@
+# Data source for existing role (if provided)
+data "aws_iam_role" "existing" {
+  count = var.existing_role_id != "" ? 1 : 0
+  name  = var.existing_role_id
+}
+
 # Permission boundary for Lambda role (T015 mitigation)
 resource "aws_iam_policy" "lambda_permission_boundary" {
   name        = "aws-service-monitor-lambda-boundary"
@@ -98,8 +104,9 @@ resource "aws_iam_policy" "lambda_permission_boundary" {
   tags = var.tags
 }
 
-# Lambda execution role with permission boundary
+# Lambda execution role with permission boundary (create if not provided)
 resource "aws_iam_role" "lambda_role" {
+  count                = var.existing_role_id == "" ? 1 : 0
   name                 = "aws-service-monitor-lambda-role"
   permissions_boundary = aws_iam_policy.lambda_permission_boundary.arn
 
@@ -119,10 +126,15 @@ resource "aws_iam_role" "lambda_role" {
   tags = var.tags
 }
 
+# Use existing role if provided
+locals {
+  lambda_role_id = var.existing_role_id != "" ? var.existing_role_id : aws_iam_role.lambda_role[0].id
+}
+
 # IAM policy for Lambda to access DynamoDB
 resource "aws_iam_role_policy" "lambda_dynamodb_policy" {
   name = "lambda-dynamodb-policy"
-  role = aws_iam_role.lambda_role.id
+  role = local.lambda_role_id
 
   policy = jsonencode({
     Version = "2012-10-17"
@@ -171,7 +183,7 @@ resource "aws_iam_role_policy" "lambda_dynamodb_policy" {
 # IAM policy for Lambda to access Organizations and SCP
 resource "aws_iam_role_policy" "lambda_scp_policy" {
   name = "lambda-scp-policy"
-  role = aws_iam_role.lambda_role.id
+  role = local.lambda_role_id
 
   policy = jsonencode({
     Version = "2012-10-17"
@@ -203,7 +215,7 @@ resource "aws_iam_role_policy" "lambda_scp_policy" {
 # IAM policy for Lambda to write baseline snapshots to S3
 resource "aws_iam_role_policy" "lambda_s3_policy" {
   name = "lambda-s3-baseline-policy"
-  role = aws_iam_role.lambda_role.id
+  role = local.lambda_role_id
 
   policy = jsonencode({
     Version = "2012-10-17"
@@ -230,7 +242,7 @@ resource "aws_iam_role_policy" "lambda_s3_policy" {
 # IAM policy for Lambda to send emails via SES
 resource "aws_iam_role_policy" "lambda_ses_policy" {
   name = "lambda-ses-policy"
-  role = aws_iam_role.lambda_role.id
+  role = local.lambda_role_id
 
   policy = jsonencode({
     Version = "2012-10-17"
@@ -250,7 +262,7 @@ resource "aws_iam_role_policy" "lambda_ses_policy" {
 # IAM policy for Lambda to publish CloudWatch metrics
 resource "aws_iam_role_policy" "lambda_cloudwatch_metrics_policy" {
   name = "lambda-cloudwatch-metrics-policy"
-  role = aws_iam_role.lambda_role.id
+  role = local.lambda_role_id
 
   policy = jsonencode({
     Version = "2012-10-17"
@@ -269,7 +281,7 @@ resource "aws_iam_role_policy" "lambda_cloudwatch_metrics_policy" {
 # IAM policy for Lambda to publish alerts via SNS
 resource "aws_iam_role_policy" "lambda_sns_policy" {
   name = "lambda-sns-policy"
-  role = aws_iam_role.lambda_role.id
+  role = local.lambda_role_id
 
   policy = jsonencode({
     Version = "2012-10-17"
@@ -288,7 +300,7 @@ resource "aws_iam_role_policy" "lambda_sns_policy" {
 # IAM policy for Lambda to write logs
 resource "aws_iam_role_policy" "lambda_logs_policy" {
   name = "lambda-logs-policy"
-  role = aws_iam_role.lambda_role.id
+  role = local.lambda_role_id
 
   policy = jsonencode({
     Version = "2012-10-17"
@@ -309,7 +321,7 @@ resource "aws_iam_role_policy" "lambda_logs_policy" {
 # IAM policy for Lambda to use the DynamoDB KMS key
 resource "aws_iam_role_policy" "lambda_kms_policy" {
   name = "lambda-kms-dynamodb-policy"
-  role = aws_iam_role.lambda_role.id
+  role = local.lambda_role_id
 
   policy = jsonencode({
     Version = "2012-10-17"

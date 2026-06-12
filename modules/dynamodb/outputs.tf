@@ -45,5 +45,5 @@ output "pending_regional_gsi_name" {
 
 output "pending_regional_gsi_arn" {
   description = "Global Secondary Index ARN for pending regional services"
-  value       = aws_dynamodb_table.pending_regional_services.global_secondary_indexes[0].arn
+  value       = "${aws_dynamodb_table.pending_regional_services.arn}/index/region-name-index"
 }
