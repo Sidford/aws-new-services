@@ -16,10 +16,10 @@ This guide walks through deploying the AWS Service Monitor to your AWS managemen
 
 ### Initialize Bootstrap Infrastructure
 
-Navigate to the bootstrap directory and deploy the backend infrastructure:
+Navigate to the terraform bootstrap directory and deploy the backend infrastructure:
 
 ```bash
-cd bootstrap
+cd terraform/bootstrap
 terraform init
 ```
 
@@ -38,14 +38,14 @@ Type `yes` to confirm.
 
 ### Note the Outputs
 
-After successful deployment, note the bucket name from the outputs. It's already configured in the root `backend.tf`:
+After successful deployment, note the bucket name from the outputs. It's already configured in `terraform/backend.tf`:
 ```
 Outputs:
 
 tfstate_bucket = "aws-service-monitor-tfstate-556717286844-eu-west-2"
 ```
 
-### Return to Root Directory
+### Return to Terraform Root Directory
 
 ```bash
 cd ..
@@ -163,9 +163,10 @@ tags = {
 
 ## Step 4: Initialize Terraform with S3 Backend
 
-From the root directory (not bootstrap):
+From the terraform directory:
 
 ```bash
+cd terraform
 terraform init
 ```
 
@@ -174,6 +175,7 @@ This downloads AWS provider plugins and initializes the working directory. When 
 ## Step 5: Review the Plan
 
 ```bash
+# From terraform directory
 terraform plan
 ```
 
@@ -190,6 +192,7 @@ Confirm all resources match your expectations.
 ## Step 6: Deploy
 
 ```bash
+# From terraform directory
 terraform apply
 ```
 
