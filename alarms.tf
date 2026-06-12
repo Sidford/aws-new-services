@@ -215,11 +215,11 @@ resource "aws_cloudwatch_metric_alarm" "eventbridge_rule_disabled" {
 resource "aws_cloudwatch_log_metric_filter" "permission_boundary_deny" {
   name           = "permission-boundary-deny-hits"
   log_group_name = aws_cloudwatch_log_group.lambda_logs.name
-  pattern        = "[time, request_id, event_type = ERROR*, ..., msg = *tampering* || *escalation* || *Baseline update failed*]"
+  pattern        = "\"Baseline update failed\""
 
   metric_transformation {
     name          = "PermissionBoundaryDenyHits"
-    namespace     = "AWS/ServiceMonitor"
+    namespace     = "ServiceMonitor"
     default_value = 0
     value         = "1"
   }
@@ -230,7 +230,7 @@ resource "aws_cloudwatch_metric_alarm" "permission_boundary_deny" {
   comparison_operator = "GreaterThanOrEqualToThreshold"
   evaluation_periods  = "1"
   metric_name         = "PermissionBoundaryDenyHits"
-  namespace           = "AWS/ServiceMonitor"
+  namespace           = "ServiceMonitor"
   period              = "300"
   statistic           = "Sum"
   threshold           = "1"
