@@ -6,6 +6,11 @@
 *.tfvars
 !terraform.tfvars.example
 
+# Bootstrap state and artifacts (one-time setup, not committed)
+bootstrap/.terraform/
+bootstrap/*.tfstate*
+bootstrap/.terraform.lock.hcl
+
 # Lambda
 lambda.zip
 lambda/__pycache__/

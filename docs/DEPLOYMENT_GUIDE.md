@@ -10,6 +10,53 @@ This guide walks through deploying the AWS Service Monitor to your AWS managemen
 - [ ] Service Control Policy named "blacklist" already created
 - [ ] Email addresses ready for SES verification
 
+## Step 0: Bootstrap Terraform State Backend (One-Time Setup)
+
+**This step only needs to be done once.** It creates the S3 bucket and DynamoDB table that will store your Terraform state remotely.
+
+### Initialize Bootstrap Infrastructure
+
+Navigate to the bootstrap directory and deploy the backend infrastructure:
+
+```bash
+cd bootstrap
+terraform init
+```
+
+This initializes Terraform with local state (safe, since this is temporary).
+
+### Deploy Backend Resources
+
+```bash
+AWS_PROFILE=sidford-mgmt terraform apply
+```
+
+When prompted, review the resources being created:
+- S3 bucket for Terraform state (with encryption, versioning, and object lock)
+- DynamoDB table for state locking
+
+Type `yes` to confirm.
+
+### Note the Outputs
+
+After successful deployment, note the outputs:
+```
+Outputs:
+
+tfstate_bucket = "aws-service-monitor-tfstate-556717286844-eu-west-2"
+tfstate_dynamodb_table = "aws-service-monitor-tfstate-lock"
+```
+
+These values are already configured in the root `backend.tf`.
+
+### Return to Root Directory
+
+```bash
+cd ..
+```
+
+You're now ready to deploy the main infrastructure.
+
 ## Step 1: Verify Email Addresses in SES
 
 Before deployment, all email addresses must be verified in AWS SES.
@@ -118,13 +165,15 @@ tags = {
 - `aws_region`: Should be eu-west-2 (Organizations API requirement)
 - `scp_name`: Must match your existing SCP name exactly
 
-## Step 4: Initialize Terraform
+## Step 4: Initialize Terraform with S3 Backend
+
+From the root directory (not bootstrap):
 
 ```bash
 terraform init
 ```
 
-This downloads AWS provider plugins and initializes the working directory.
+This downloads AWS provider plugins and initializes the working directory. When prompted about migrating state to S3 backend, confirm by typing `yes`. Your state will now be stored remotely in the S3 bucket created in Step 0.
 
 ## Step 5: Review the Plan
 
