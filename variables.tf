@@ -62,6 +62,12 @@ variable "approval_recipients" {
   default     = []
 }
 
+variable "enable_cloudwatch_dashboard" {
+  description = "Enable/disable CloudWatch dashboard creation"
+  type        = bool
+  default     = true
+}
+
 variable "tags" {
   description = "Common tags for all resources"
   type        = map(string)

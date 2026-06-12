@@ -2,6 +2,7 @@
 # Provides real-time visibility into system health and performance
 
 resource "aws_cloudwatch_dashboard" "service_monitor" {
+  count          = var.enable_cloudwatch_dashboard ? 1 : 0
   dashboard_name = "aws-service-monitor"
 
   dashboard_body = jsonencode({
