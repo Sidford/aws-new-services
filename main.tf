@@ -221,23 +221,72 @@ resource "aws_iam_policy" "lambda_permission_boundary" {
     Version = "2012-10-17"
     Statement = [
       {
-        Sid    = "AllowRequiredServices"
+        Sid    = "AllowDynamoDBOperations"
         Effect = "Allow"
         Action = [
-          "dynamodb:*",
+          "dynamodb:GetItem",
+          "dynamodb:PutItem",
+          "dynamodb:UpdateItem",
+          "dynamodb:Query",
+          "dynamodb:Scan",
+          "dynamodb:BatchWriteItem"
+        ]
+        Resource = "*"
+      },
+      {
+        Sid    = "AllowS3Operations"
+        Effect = "Allow"
+        Action = [
+          "s3:PutObject",
+          "s3:PutObjectVersionTagging",
+          "s3:ListBucket"
+        ]
+        Resource = "*"
+      },
+      {
+        Sid    = "AllowOrganizationsOperations"
+        Effect = "Allow"
+        Action = [
           "organizations:ListPolicies",
           "organizations:DescribePolicy",
-          "organizations:UpdatePolicy",
+          "organizations:UpdatePolicy"
+        ]
+        Resource = "*"
+      },
+      {
+        Sid    = "AllowSESOperations"
+        Effect = "Allow"
+        Action = [
           "ses:SendEmail",
-          "ses:SendRawEmail",
-          "s3:*",
+          "ses:SendRawEmail"
+        ]
+        Resource = "*"
+      },
+      {
+        Sid    = "AllowCloudWatchAndLogging"
+        Effect = "Allow"
+        Action = [
           "cloudwatch:PutMetricData",
           "logs:CreateLogGroup",
           "logs:CreateLogStream",
-          "logs:PutLogEvents",
+          "logs:PutLogEvents"
+        ]
+        Resource = "*"
+      },
+      {
+        Sid    = "AllowKMSOperations"
+        Effect = "Allow"
+        Action = [
           "kms:GenerateDataKey",
           "kms:Decrypt",
-          "kms:DescribeKey",
+          "kms:DescribeKey"
+        ]
+        Resource = "*"
+      },
+      {
+        Sid    = "AllowSNSOperations"
+        Effect = "Allow"
+        Action = [
           "sns:Publish"
         ]
         Resource = "*"

@@ -210,3 +210,32 @@ resource "aws_cloudwatch_metric_alarm" "eventbridge_rule_disabled" {
 
   tags = var.tags
 }
+
+# T011/T015 Mitigation: Alert on permission boundary Deny hits (high-fidelity compromise signal)
+resource "aws_cloudwatch_log_metric_filter" "permission_boundary_deny" {
+  name           = "permission-boundary-deny-hits"
+  log_group_name = aws_cloudwatch_log_group.lambda_logs.name
+  pattern        = "[time, request_id, event_type = ERROR*, ..., msg = *tampering* || *escalation* || *Baseline update failed*]"
+
+  metric_transformation {
+    name          = "PermissionBoundaryDenyHits"
+    namespace     = "AWS/ServiceMonitor"
+    default_value = 0
+    value         = "1"
+  }
+}
+
+resource "aws_cloudwatch_metric_alarm" "permission_boundary_deny" {
+  alarm_name          = "service-monitor-permission-boundary-deny"
+  comparison_operator = "GreaterThanOrEqualToThreshold"
+  evaluation_periods  = "1"
+  metric_name         = "PermissionBoundaryDenyHits"
+  namespace           = "AWS/ServiceMonitor"
+  period              = "300"
+  statistic           = "Sum"
+  threshold           = "1"
+  alarm_description   = "Alert on permission boundary Deny hits (high-fidelity compromise signal for T011/T015)"
+  alarm_actions       = [aws_sns_topic.alerts.arn]
+
+  tags = var.tags
+}

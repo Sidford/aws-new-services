@@ -695,11 +695,17 @@ def store_new_services(services: List[str]) -> None:
 
 
 def update_baseline_checksum(all_services: Set[str]) -> bool:
-    """Update the baseline checksum after new services are added."""
+    """
+    Update the baseline checksum after new services are added.
+
+    T004 Mitigation: Uses ConditionExpression to ensure baseline marker exists
+    before allowing update, preventing unauthorized baseline resets.
+    """
     try:
         table = dynamodb.Table(DYNAMODB_TABLE)
         new_checksum = calculate_baseline_checksum(all_services)
 
+        # T004: Prevent unauthorized baseline reset via ConditionExpression
         table.update_item(
             Key={'service_name': BASELINE_MARKER},
             UpdateExpression='SET checksum = :checksum, last_updated = :ts, service_count = :count',
@@ -707,14 +713,19 @@ def update_baseline_checksum(all_services: Set[str]) -> bool:
                 ':checksum': new_checksum,
                 ':ts': datetime.utcnow().isoformat(),
                 ':count': len(all_services)
-            }
+            },
+            ConditionExpression='attribute_exists(service_name)',  # Baseline marker must exist
+            ReturnValues='NONE'
         )
 
         logger.info(f"Updated baseline checksum to {new_checksum[:16]}... ({len(all_services)} services)")
         return True
 
     except Exception as e:
-        logger.error(f"Error updating baseline checksum: {str(e)}")
+        if 'ConditionalCheckFailedException' in str(type(e).__name__):
+            logger.error(f"Baseline update failed: baseline marker does not exist (possible tampering attempt)")
+        else:
+            logger.error(f"Error updating baseline checksum: {str(e)}")
         return False
 
 
