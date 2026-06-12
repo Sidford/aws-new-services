@@ -28,8 +28,14 @@ The Lambda function is designed with approval gates, baseline integrity checking
 
 ## Key Files & Their Roles
 
-- **Terraform configuration**: `main.tf` (primary infrastructure), `providers.tf` (AWS provider), `variables.tf` (input variables), `outputs.tf` (outputs)
-- **Monitoring**: `alarms.tf` (CloudWatch alarms), `dashboards.tf` (CloudWatch dashboards)
+- **Terraform configuration** (`terraform/`):
+  - `terraform/main.tf` (primary infrastructure)
+  - `terraform/providers.tf` (AWS provider)
+  - `terraform/variables.tf` (input variables)
+  - `terraform/outputs.tf` (outputs)
+  - `terraform/backend.tf` (S3 remote state configuration)
+  - `terraform/modules/` (modular components: dynamodb, storage, notifications, iam, lambda, events, monitoring, iam-scp-events)
+  - `terraform/bootstrap/` (one-time setup: S3 bucket + DynamoDB lock table for state backend)
 - **Lambda code**: `lambda/index.py` (handler), `lambda/requirements.txt` (Python dependencies: boto3, requests)
 - **Examples**: `example-blacklist-policy.json`, `terraform.tfvars.example`
 - **Documentation**: 
@@ -47,8 +53,12 @@ The Lambda function is designed with approval gates, baseline integrity checking
 
 ### Terraform/Infrastructure
 
+All terraform commands should be run from the `terraform/` directory:
+
 ```bash
-# Initialize Terraform
+cd terraform
+
+# Initialize Terraform (one-time after cloning)
 terraform init
 
 # Validate configuration
@@ -65,6 +75,13 @@ terraform plan -out=tfplan
 
 # Destroy all resources
 terraform destroy
+```
+
+Or use `-chdir` flag from the root:
+
+```bash
+terraform -chdir=terraform init
+terraform -chdir=terraform plan
 ```
 
 ### Lambda Development & Testing
@@ -117,6 +134,9 @@ aws ses list-identities --region eu-west-2
 
 # Re-verify an email address in SES (required before it can receive notifications)
 aws ses verify-email-identity --email-address user@example.com --region eu-west-2
+
+# Check Terraform state in S3 backend
+aws s3 ls s3://aws-service-monitor-tfstate-556717286844-eu-west-2/
 ```
 
 ## Development Workflow
