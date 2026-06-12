@@ -22,12 +22,13 @@ Automatically monitor AWS for new services and manage Service Control Policy bla
 | 🔄 **Automated Monitoring** | Daily Lambda invocation fetches AWS service reference |
 | 🎯 **Smart Detection** | Identifies only new services (ignores API changes) |
 | 💾 **State Tracking** | DynamoDB registry with baseline integrity verification |
-| 📋 **SCP Management** | Auto-update blacklist SCP with new services |
-| 📧 **Email Alerts** | HTML + Text notifications for all changes |
+| 📋 **SCP Management** | Auto-update blacklist SCP with new services (cautious-by-default) |
+| 🌍 **Regional Intelligence** | Track when services become available in your region (eu-west-2) |
+| 📧 **Email Alerts** | HTML + Text notifications with regional status info |
 | 🛡️ **Data Protection** | SHA256 checksums + S3 Object Lock snapshots |
 | 📊 **Real-time Dashboard** | CloudWatch dashboard with key metrics |
 | 🚨 **Smart Alerting** | 8 CloudWatch alarms with SNS notifications |
-| 📖 **Runbooks** | 8 comprehensive operational procedures |
+| 📖 **Runbooks** | 9 comprehensive operational procedures |
 | 🏗️ **Infrastructure as Code** | Full Terraform/OpenTofu deployment |
 
 ---

@@ -165,9 +165,156 @@ resource "aws_dynamodb_table" "approved_services" {
   tags = var.tags
 }
 
+# DynamoDB table for tracking services pending regional availability (eu-west-2)
+resource "aws_dynamodb_table" "pending_regional_services" {
+  name           = "aws-service-monitor-pending-regional"
+  billing_mode   = "PAY_PER_REQUEST"
+  hash_key       = "service_name"
+  range_key      = "detected_at"
+
+  attribute {
+    name = "service_name"
+    type = "S"
+  }
+
+  attribute {
+    name = "detected_at"
+    type = "S"
+  }
+
+  attribute {
+    name = "region_name"
+    type = "S"
+  }
+
+  attribute {
+    name = "available_in_region"
+    type = "N"
+  }
+
+  global_secondary_index {
+    name            = "region-name-index"
+    hash_key        = "region_name"
+    range_key       = "available_in_region"
+    projection_type = "ALL"
+  }
+
+  point_in_time_recovery {
+    enabled = true
+  }
+
+  server_side_encryption {
+    enabled     = true
+    kms_key_arn = aws_kms_key.dynamodb.arn
+  }
+
+  tags = var.tags
+}
+
 # IAM role for Lambda function
+# Permission boundary for Lambda role (T015 mitigation - WAF finding)
+resource "aws_iam_policy" "lambda_permission_boundary" {
+  name        = "aws-service-monitor-lambda-boundary"
+  description = "Permission boundary limiting Lambda to only required services"
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Sid    = "AllowDynamoDBOperations"
+        Effect = "Allow"
+        Action = [
+          "dynamodb:GetItem",
+          "dynamodb:PutItem",
+          "dynamodb:UpdateItem",
+          "dynamodb:Query",
+          "dynamodb:Scan",
+          "dynamodb:BatchWriteItem"
+        ]
+        Resource = "*"
+      },
+      {
+        Sid    = "AllowS3Operations"
+        Effect = "Allow"
+        Action = [
+          "s3:PutObject",
+          "s3:PutObjectVersionTagging",
+          "s3:ListBucket"
+        ]
+        Resource = "*"
+      },
+      {
+        Sid    = "AllowOrganizationsOperations"
+        Effect = "Allow"
+        Action = [
+          "organizations:ListPolicies",
+          "organizations:DescribePolicy",
+          "organizations:UpdatePolicy"
+        ]
+        Resource = "*"
+      },
+      {
+        Sid    = "AllowSESOperations"
+        Effect = "Allow"
+        Action = [
+          "ses:SendEmail",
+          "ses:SendRawEmail"
+        ]
+        Resource = "*"
+      },
+      {
+        Sid    = "AllowCloudWatchAndLogging"
+        Effect = "Allow"
+        Action = [
+          "cloudwatch:PutMetricData",
+          "logs:CreateLogGroup",
+          "logs:CreateLogStream",
+          "logs:PutLogEvents"
+        ]
+        Resource = "*"
+      },
+      {
+        Sid    = "AllowKMSOperations"
+        Effect = "Allow"
+        Action = [
+          "kms:GenerateDataKey",
+          "kms:Decrypt",
+          "kms:DescribeKey"
+        ]
+        Resource = "*"
+      },
+      {
+        Sid    = "AllowSNSOperations"
+        Effect = "Allow"
+        Action = [
+          "sns:Publish"
+        ]
+        Resource = "*"
+      },
+      {
+        Sid    = "DenyDangerousActions"
+        Effect = "Deny"
+        Action = [
+          "iam:*",
+          "sts:AssumeRole",
+          "ec2:TerminateInstances",
+          "rds:DeleteDBInstance",
+          "rds:DeleteDBCluster",
+          "s3:DeleteBucket",
+          "organizations:DetachPolicy",
+          "organizations:DeletePolicy"
+        ]
+        Resource = "*"
+      }
+    ]
+  })
+
+  tags = var.tags
+}
+
 resource "aws_iam_role" "lambda_role" {
-  name = "aws-service-monitor-lambda-role"
+  name                 = "aws-service-monitor-lambda-role"
+  permissions_boundary = aws_iam_policy.lambda_permission_boundary.arn
 
   assume_role_policy = jsonencode({
     Version = "2012-10-17"
@@ -218,6 +365,21 @@ resource "aws_iam_role_policy" "lambda_dynamodb_policy" {
         Resource = [
           aws_dynamodb_table.approved_services.arn,
           "${aws_dynamodb_table.approved_services.arn}/index/*"
+        ]
+      },
+      {
+        # Regional monitoring: Track services pending availability in eu-west-2
+        # Used for operational intelligence only (not for SCP gating)
+        Effect = "Allow"
+        Action = [
+          "dynamodb:GetItem",
+          "dynamodb:PutItem",
+          "dynamodb:UpdateItem",
+          "dynamodb:Query"
+        ]
+        Resource = [
+          aws_dynamodb_table.pending_regional_services.arn,
+          "${aws_dynamodb_table.pending_regional_services.arn}/index/*"
         ]
       }
     ]
@@ -478,6 +640,7 @@ resource "aws_lambda_function" "service_monitor" {
     variables = {
       DYNAMODB_TABLE                   = aws_dynamodb_table.service_registry.name
       APPROVED_SERVICES_TABLE          = aws_dynamodb_table.approved_services.name
+      PENDING_REGIONAL_SERVICES_TABLE  = aws_dynamodb_table.pending_regional_services.name
       SCP_NAME                         = var.scp_name
       EMAIL_RECIPIENTS                 = jsonencode(var.email_recipients)
       SENDER_EMAIL                     = var.sender_email
@@ -488,6 +651,8 @@ resource "aws_lambda_function" "service_monitor" {
       ENABLE_SERVICE_APPROVAL_WORKFLOW = var.enable_service_approval_workflow ? "true" : "false"
       APPROVED_SERVICES_LIST           = jsonencode(var.approved_services)
       APPROVAL_RECIPIENTS              = jsonencode(length(var.approval_recipients) > 0 ? var.approval_recipients : var.email_recipients)
+      ENABLE_REGIONAL_MONITORING       = "true"
+      MONITORED_REGION                 = "eu-west-2"
     }
   }
 
@@ -497,7 +662,7 @@ resource "aws_lambda_function" "service_monitor" {
 # CloudWatch Log Group for Lambda
 resource "aws_cloudwatch_log_group" "lambda_logs" {
   name              = "/aws/lambda/aws-service-monitor"
-  retention_in_days = 14
+  retention_in_days = 90  # Increased from 14 days for forensic analysis (WAF finding)
 
   tags = var.tags
 }
