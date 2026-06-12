@@ -1,693 +1,145 @@
-# KMS key for DynamoDB encryption (T003 mitigation)
-resource "aws_kms_key" "dynamodb" {
-  description             = "CMK for aws-service-monitor DynamoDB tables"
-  enable_key_rotation     = true
-  deletion_window_in_days = 14
+# Data source for current AWS account ID
+data "aws_caller_identity" "current" {}
 
-  policy = jsonencode({
-    Version = "2012-10-17"
-    Statement = [
-      {
-        Sid    = "AllowAccountAdmin"
-        Effect = "Allow"
-        Principal = {
-          AWS = "arn:aws:iam::${data.aws_caller_identity.current.account_id}:root"
-        }
-        Action   = "kms:*"
-        Resource = "*"
-      },
-      {
-        Sid    = "AllowLambdaEncryptDecrypt"
-        Effect = "Allow"
-        Principal = {
-          AWS = aws_iam_role.lambda_role.arn
-        }
-        Action = [
-          "kms:GenerateDataKey",
-          "kms:Decrypt"
-        ]
-        Resource = "*"
-      }
-    ]
-  })
-
-  tags = var.tags
-}
-
-resource "aws_kms_alias" "dynamodb" {
-  name          = "alias/aws-service-monitor-dynamodb"
-  target_key_id = aws_kms_key.dynamodb.key_id
-}
-
-# S3 bucket for immutable baseline snapshots (T004 mitigation)
-resource "aws_s3_bucket" "baseline_snapshots" {
-  bucket = "service-monitor-baseline-${data.aws_caller_identity.current.account_id}-${var.aws_region}"
-
-  tags = var.tags
-}
-
-resource "aws_s3_bucket_versioning" "baseline_snapshots" {
-  bucket = aws_s3_bucket.baseline_snapshots.id
-
-  versioning_configuration {
-    status = "Enabled"
-  }
-}
-
-resource "aws_s3_bucket_object_lock_configuration" "baseline_snapshots" {
-  bucket = aws_s3_bucket.baseline_snapshots.id
-
-  rule {
-    default_retention {
-      mode = "GOVERNANCE"
-      days = 90  # 90-day retention for immutability
-    }
-  }
-}
-
-resource "aws_s3_bucket_server_side_encryption_configuration" "baseline_snapshots" {
-  bucket = aws_s3_bucket.baseline_snapshots.id
-
-  rule {
-    apply_server_side_encryption_by_default {
-      sse_algorithm = "AES256"
-    }
-  }
-}
-
-resource "aws_s3_bucket_public_access_block" "baseline_snapshots" {
-  bucket = aws_s3_bucket.baseline_snapshots.id
-
-  block_public_acls       = true
-  block_public_policy     = true
-  ignore_public_acls      = true
-  restrict_public_buckets = true
-}
-
-resource "aws_s3_bucket_lifecycle_configuration" "baseline_snapshots" {
-  bucket = aws_s3_bucket.baseline_snapshots.id
-
-  rule {
-    id     = "delete_old_snapshots"
-    status = "Enabled"
-
-    filter {}
-
-    expiration {
-      days = 365
-    }
-
-    noncurrent_version_expiration {
-      noncurrent_days = 90
-    }
-  }
-}
-
-# DynamoDB table for tracking monitored services
-resource "aws_dynamodb_table" "service_registry" {
-  name           = "aws-service-monitor-registry"
-  billing_mode   = "PAY_PER_REQUEST"
-  hash_key       = "service_name"
-
-  attribute {
-    name = "service_name"
-    type = "S"
-  }
-
-  point_in_time_recovery {
-    enabled = true
-  }
-
-  server_side_encryption {
-    enabled     = true
-    kms_key_arn = aws_kms_key.dynamodb.arn
-  }
-
-  ttl {
-    attribute_name = "expiration_time"
-    enabled        = false
-  }
-
-  tags = var.tags
-}
-
-# DynamoDB table for tracking approved services and approval requests
-resource "aws_dynamodb_table" "approved_services" {
-  name           = "aws-service-monitor-approved-services"
-  billing_mode   = "PAY_PER_REQUEST"
-  hash_key       = "service_name"
-
-  attribute {
-    name = "service_name"
-    type = "S"
-  }
-
-  attribute {
-    name = "approval_status"
-    type = "S"
-  }
-
-  global_secondary_index {
-    name            = "approval-status-index"
-    hash_key        = "approval_status"
-    projection_type = "ALL"
-  }
-
-  point_in_time_recovery {
-    enabled = true
-  }
-
-  server_side_encryption {
-    enabled     = true
-    kms_key_arn = aws_kms_key.dynamodb.arn
-  }
-
-  tags = var.tags
-}
-
-# DynamoDB table for tracking services pending regional availability (eu-west-2)
-resource "aws_dynamodb_table" "pending_regional_services" {
-  name           = "aws-service-monitor-pending-regional"
-  billing_mode   = "PAY_PER_REQUEST"
-  hash_key       = "service_name"
-  range_key      = "detected_at"
-
-  attribute {
-    name = "service_name"
-    type = "S"
-  }
-
-  attribute {
-    name = "detected_at"
-    type = "S"
-  }
-
-  attribute {
-    name = "region_name"
-    type = "S"
-  }
-
-  attribute {
-    name = "available_in_region"
-    type = "N"
-  }
-
-  global_secondary_index {
-    name            = "region-name-index"
-    hash_key        = "region_name"
-    range_key       = "available_in_region"
-    projection_type = "ALL"
-  }
-
-  point_in_time_recovery {
-    enabled = true
-  }
-
-  server_side_encryption {
-    enabled     = true
-    kms_key_arn = aws_kms_key.dynamodb.arn
-  }
-
-  tags = var.tags
-}
-
-# IAM role for Lambda function
-# Permission boundary for Lambda role (T015 mitigation - WAF finding)
-resource "aws_iam_policy" "lambda_permission_boundary" {
-  name        = "aws-service-monitor-lambda-boundary"
-  description = "Permission boundary limiting Lambda to only required services"
-
-  policy = jsonencode({
-    Version = "2012-10-17"
-    Statement = [
-      {
-        Sid    = "AllowDynamoDBOperations"
-        Effect = "Allow"
-        Action = [
-          "dynamodb:GetItem",
-          "dynamodb:PutItem",
-          "dynamodb:UpdateItem",
-          "dynamodb:Query",
-          "dynamodb:Scan",
-          "dynamodb:BatchWriteItem"
-        ]
-        Resource = "*"
-      },
-      {
-        Sid    = "AllowS3Operations"
-        Effect = "Allow"
-        Action = [
-          "s3:PutObject",
-          "s3:PutObjectVersionTagging",
-          "s3:ListBucket"
-        ]
-        Resource = "*"
-      },
-      {
-        Sid    = "AllowOrganizationsOperations"
-        Effect = "Allow"
-        Action = [
-          "organizations:ListPolicies",
-          "organizations:DescribePolicy",
-          "organizations:UpdatePolicy"
-        ]
-        Resource = "*"
-      },
-      {
-        Sid    = "AllowSESOperations"
-        Effect = "Allow"
-        Action = [
-          "ses:SendEmail",
-          "ses:SendRawEmail"
-        ]
-        Resource = "*"
-      },
-      {
-        Sid    = "AllowCloudWatchAndLogging"
-        Effect = "Allow"
-        Action = [
-          "cloudwatch:PutMetricData",
-          "logs:CreateLogGroup",
-          "logs:CreateLogStream",
-          "logs:PutLogEvents"
-        ]
-        Resource = "*"
-      },
-      {
-        Sid    = "AllowKMSOperations"
-        Effect = "Allow"
-        Action = [
-          "kms:GenerateDataKey",
-          "kms:Decrypt",
-          "kms:DescribeKey"
-        ]
-        Resource = "*"
-      },
-      {
-        Sid    = "AllowSNSOperations"
-        Effect = "Allow"
-        Action = [
-          "sns:Publish"
-        ]
-        Resource = "*"
-      },
-      {
-        Sid    = "DenyDangerousActions"
-        Effect = "Deny"
-        Action = [
-          "iam:*",
-          "sts:AssumeRole",
-          "ec2:TerminateInstances",
-          "rds:DeleteDBInstance",
-          "rds:DeleteDBCluster",
-          "s3:DeleteBucket",
-          "organizations:DetachPolicy",
-          "organizations:DeletePolicy"
-        ]
-        Resource = "*"
-      }
-    ]
-  })
-
-  tags = var.tags
-}
-
-resource "aws_iam_role" "lambda_role" {
-  name                 = "aws-service-monitor-lambda-role"
-  permissions_boundary = aws_iam_policy.lambda_permission_boundary.arn
-
-  assume_role_policy = jsonencode({
-    Version = "2012-10-17"
-    Statement = [
-      {
-        Action = "sts:AssumeRole"
-        Effect = "Allow"
-        Principal = {
-          Service = "lambda.amazonaws.com"
-        }
-      }
-    ]
-  })
-
-  tags = var.tags
-}
-
-# IAM policy for Lambda to access DynamoDB
-resource "aws_iam_role_policy" "lambda_dynamodb_policy" {
-  name = "lambda-dynamodb-policy"
-  role = aws_iam_role.lambda_role.id
-
-  policy = jsonencode({
-    Version = "2012-10-17"
-    Statement = [
-      {
-        Effect = "Allow"
-        Action = [
-          "dynamodb:GetItem",
-          "dynamodb:PutItem",
-          "dynamodb:UpdateItem",
-          "dynamodb:Query",
-          "dynamodb:Scan",
-          "dynamodb:BatchWriteItem"
-        ]
-        Resource = aws_dynamodb_table.service_registry.arn
-      },
-      {
-        # T015: approved-services is read + PutItem (pending records) only.
-        # UpdateItem and Scan are withheld — Lambda cannot promote a record to
-        # 'approved' status nor enumerate the table without going through the GSI.
-        Effect = "Allow"
-        Action = [
-          "dynamodb:GetItem",
-          "dynamodb:PutItem",
-          "dynamodb:Query"
-        ]
-        Resource = [
-          aws_dynamodb_table.approved_services.arn,
-          "${aws_dynamodb_table.approved_services.arn}/index/*"
-        ]
-      },
-      {
-        # Regional monitoring: Track services pending availability in eu-west-2
-        # Used for operational intelligence only (not for SCP gating)
-        Effect = "Allow"
-        Action = [
-          "dynamodb:GetItem",
-          "dynamodb:PutItem",
-          "dynamodb:UpdateItem",
-          "dynamodb:Query"
-        ]
-        Resource = [
-          aws_dynamodb_table.pending_regional_services.arn,
-          "${aws_dynamodb_table.pending_regional_services.arn}/index/*"
-        ]
-      }
-    ]
-  })
-}
-
-# IAM policy for Lambda to access Organizations and SCP (T005 mitigation)
-resource "aws_iam_role_policy" "lambda_scp_policy" {
-  name = "lambda-scp-policy"
-  role = aws_iam_role.lambda_role.id
-
-  policy = jsonencode({
-    Version = "2012-10-17"
-    Statement = [
-      {
-        Effect   = "Allow"
-        Action   = ["organizations:ListPolicies"]
-        Resource = "*"
-        Condition = {
-          StringEquals = {
-            "organizations:PolicyType" = "SERVICE_CONTROL_POLICY"
-          }
-        }
-      },
-      {
-        Effect   = "Allow"
-        Action   = ["organizations:DescribePolicy", "organizations:UpdatePolicy"]
-        Resource = "arn:aws:organizations::${data.aws_caller_identity.current.account_id}:policy/p-*"
-        Condition = {
-          StringEquals = {
-            "organizations:PolicyType" = "SERVICE_CONTROL_POLICY"
-          }
-        }
-      }
-    ]
-  })
-}
-
-# T005: SNS topic in us-east-1 for SCP change alerts (Organizations CloudTrail
-# events are only available in us-east-1 EventBridge).
-resource "aws_sns_topic" "scp_change_alerts" {
-  provider = aws.us_east_1
-  name     = "aws-service-monitor-scp-change-alerts"
-  tags     = var.tags
-}
-
-resource "aws_sns_topic_subscription" "scp_change_alert_emails" {
-  provider  = aws.us_east_1
-  count     = length(var.email_recipients)
-  topic_arn = aws_sns_topic.scp_change_alerts.arn
-  protocol  = "email"
-  endpoint  = var.email_recipients[count.index]
-}
-
-resource "aws_sns_topic_policy" "scp_change_alerts" {
-  provider = aws.us_east_1
-  arn      = aws_sns_topic.scp_change_alerts.arn
-
-  policy = jsonencode({
-    Version = "2012-10-17"
-    Statement = [
-      {
-        Sid    = "AllowEventBridgePublish"
-        Effect = "Allow"
-        Principal = {
-          Service = "events.amazonaws.com"
-        }
-        Action   = "sns:Publish"
-        Resource = aws_sns_topic.scp_change_alerts.arn
-      }
-    ]
-  })
-}
-
-# EventBridge rule in us-east-1 to detect any SCP policy modification
-resource "aws_cloudwatch_event_rule" "scp_changes" {
-  provider    = aws.us_east_1
-  name        = "aws-service-monitor-scp-changes"
-  description = "Alert on any direct SCP policy modification outside the Lambda workflow (T005)"
-
-  event_pattern = jsonencode({
-    source      = ["aws.organizations"]
-    detail-type = ["AWS API Call via CloudTrail"]
-    detail = {
-      eventName = ["UpdatePolicy", "DeletePolicy", "CreatePolicy", "AttachPolicy", "DetachPolicy"]
-    }
-  })
-
-  tags = var.tags
-}
-
-resource "aws_cloudwatch_event_target" "scp_changes_sns" {
-  provider  = aws.us_east_1
-  rule      = aws_cloudwatch_event_rule.scp_changes.name
-  target_id = "scp-change-sns-alert"
-  arn       = aws_sns_topic.scp_change_alerts.arn
-}
-
-# IAM policy for Lambda to write baseline snapshots to S3 (T004 mitigation)
-resource "aws_iam_role_policy" "lambda_s3_policy" {
-  name = "lambda-s3-baseline-policy"
-  role = aws_iam_role.lambda_role.id
-
-  policy = jsonencode({
-    Version = "2012-10-17"
-    Statement = [
-      {
-        Effect = "Allow"
-        Action = [
-          "s3:PutObject",
-          "s3:PutObjectVersionTagging"
-        ]
-        Resource = "${aws_s3_bucket.baseline_snapshots.arn}/*"
-      },
-      {
-        Effect = "Allow"
-        Action = [
-          "s3:ListBucket"
-        ]
-        Resource = aws_s3_bucket.baseline_snapshots.arn
-      }
-    ]
-  })
-}
-
-# IAM policy for Lambda to send emails via SES
-resource "aws_iam_role_policy" "lambda_ses_policy" {
-  name = "lambda-ses-policy"
-  role = aws_iam_role.lambda_role.id
-
-  policy = jsonencode({
-    Version = "2012-10-17"
-    Statement = [
-      {
-        Effect = "Allow"
-        Action = [
-          "ses:SendEmail",
-          "ses:SendRawEmail"
-        ]
-        Resource = "*"
-      }
-    ]
-  })
-}
-
-# IAM policy for Lambda to publish CloudWatch metrics
-resource "aws_iam_role_policy" "lambda_cloudwatch_metrics_policy" {
-  name = "lambda-cloudwatch-metrics-policy"
-  role = aws_iam_role.lambda_role.id
-
-  policy = jsonencode({
-    Version = "2012-10-17"
-    Statement = [
-      {
-        Effect = "Allow"
-        Action = [
-          "cloudwatch:PutMetricData"
-        ]
-        Resource = "*"
-      }
-    ]
-  })
-}
-
-# IAM policy for Lambda to publish alerts via SNS
-resource "aws_iam_role_policy" "lambda_sns_policy" {
-  name = "lambda-sns-policy"
-  role = aws_iam_role.lambda_role.id
-
-  policy = jsonencode({
-    Version = "2012-10-17"
-    Statement = [
-      {
-        Effect = "Allow"
-        Action = [
-          "sns:Publish"
-        ]
-        Resource = aws_sns_topic.alerts.arn
-      }
-    ]
-  })
-}
-
-# IAM policy for Lambda to write logs (restricted to specific log group)
-resource "aws_iam_role_policy" "lambda_logs_policy" {
-  name = "lambda-logs-policy"
-  role = aws_iam_role.lambda_role.id
-
-  policy = jsonencode({
-    Version = "2012-10-17"
-    Statement = [
-      {
-        Effect = "Allow"
-        Action = [
-          "logs:CreateLogGroup",
-          "logs:CreateLogStream",
-          "logs:PutLogEvents"
-        ]
-        Resource = "${aws_cloudwatch_log_group.lambda_logs.arn}:*"
-      }
-    ]
-  })
-}
-
-# IAM policy for Lambda to use the DynamoDB KMS key (T003 mitigation)
-resource "aws_iam_role_policy" "lambda_kms_policy" {
-  name = "lambda-kms-dynamodb-policy"
-  role = aws_iam_role.lambda_role.id
-
-  policy = jsonencode({
-    Version = "2012-10-17"
-    Statement = [
-      {
-        Effect = "Allow"
-        Action = [
-          "kms:GenerateDataKey",
-          "kms:Decrypt"
-        ]
-        Resource = aws_kms_key.dynamodb.arn
-      }
-    ]
-  })
-}
-
-# SNS topic for CloudWatch Alarms and operational alerts
-resource "aws_sns_topic" "alerts" {
-  name = "aws-service-monitor-alerts"
-
-  tags = var.tags
-}
-
-# SNS subscriptions for alert email recipients
-resource "aws_sns_topic_subscription" "alert_emails" {
-  count     = length(var.email_recipients)
-  topic_arn = aws_sns_topic.alerts.arn
-  protocol  = "email"
-  endpoint  = var.email_recipients[count.index]
-}
-
-# Archive the Lambda function code
-data "archive_file" "lambda_code" {
-  type        = "zip"
-  source_dir  = "${path.module}/lambda"
-  output_path = "${path.module}/lambda.zip"
-}
-
-# Lambda function
-resource "aws_lambda_function" "service_monitor" {
-  filename         = data.archive_file.lambda_code.output_path
-  function_name    = "aws-service-monitor"
-  role             = aws_iam_role.lambda_role.arn
-  handler          = "index.lambda_handler"
-  source_code_hash = data.archive_file.lambda_code.output_base64sha256
-  timeout          = 300
-  runtime          = "python3.11"
-
-  environment {
-    variables = {
-      DYNAMODB_TABLE                   = aws_dynamodb_table.service_registry.name
-      APPROVED_SERVICES_TABLE          = aws_dynamodb_table.approved_services.name
-      PENDING_REGIONAL_SERVICES_TABLE  = aws_dynamodb_table.pending_regional_services.name
-      SCP_NAME                         = var.scp_name
-      EMAIL_RECIPIENTS                 = jsonencode(var.email_recipients)
-      SENDER_EMAIL                     = var.sender_email
-      REQUIRE_APPROVAL                 = var.require_scp_approval ? "true" : "false"
-      MANAGE_SCP_POLICY                = var.manage_scp_policy ? "true" : "false"
-      BASELINE_SNAPSHOT_BUCKET         = aws_s3_bucket.baseline_snapshots.id
-      ALERT_TOPIC_ARN                  = aws_sns_topic.alerts.arn
-      ENABLE_SERVICE_APPROVAL_WORKFLOW = var.enable_service_approval_workflow ? "true" : "false"
-      APPROVED_SERVICES_LIST           = jsonencode(var.approved_services)
-      APPROVAL_RECIPIENTS              = jsonencode(length(var.approval_recipients) > 0 ? var.approval_recipients : var.email_recipients)
-      ENABLE_REGIONAL_MONITORING       = "true"
-      MONITORED_REGION                 = "eu-west-2"
-    }
-  }
-
-  tags = var.tags
-}
-
-# CloudWatch Log Group for Lambda
+# CloudWatch log group for Lambda (created here to resolve circular dependency)
 resource "aws_cloudwatch_log_group" "lambda_logs" {
   name              = "/aws/lambda/aws-service-monitor"
-  retention_in_days = 90  # Increased from 14 days for forensic analysis (WAF finding)
+  retention_in_days = 90
 
   tags = var.tags
 }
 
-# EventBridge rule for scheduling
-resource "aws_cloudwatch_event_rule" "daily_monitor" {
-  name                = "aws-service-monitor-daily"
-  description         = "Trigger AWS service monitor daily"
-  schedule_expression = var.schedule_expression
+# ============================================================================
+# Module: DynamoDB (No dependencies)
+# ============================================================================
+module "dynamodb" {
+  source = "./modules/dynamodb"
 
-  tags = var.tags
+  aws_region      = var.aws_region
+  aws_account_id  = data.aws_caller_identity.current.account_id
+  lambda_role_arn = module.iam.lambda_role_arn
+  tags            = var.tags
+
+  depends_on = [module.iam]
 }
 
-# EventBridge target
-resource "aws_cloudwatch_event_target" "lambda_target" {
-  rule      = aws_cloudwatch_event_rule.daily_monitor.name
-  target_id = "AWSServiceMonitorLambda"
-  arn       = aws_lambda_function.service_monitor.arn
+# ============================================================================
+# Module: Storage (No dependencies)
+# ============================================================================
+module "storage" {
+  source = "./modules/storage"
+
+  aws_region     = var.aws_region
+  aws_account_id = data.aws_caller_identity.current.account_id
+  tags           = var.tags
 }
 
-# Lambda permission for EventBridge
-resource "aws_lambda_permission" "allow_eventbridge" {
-  statement_id  = "AllowExecutionFromEventBridge"
-  action        = "lambda:InvokeFunction"
-  function_name = aws_lambda_function.service_monitor.function_name
-  principal     = "events.amazonaws.com"
-  source_arn    = aws_cloudwatch_event_rule.daily_monitor.arn
+# ============================================================================
+# Module: Notifications (No dependencies)
+# ============================================================================
+module "notifications" {
+  source = "./modules/notifications"
+
+  email_recipients = var.email_recipients
+  tags             = var.tags
+}
+
+# ============================================================================
+# Module: SCP Events (us-east-1, No dependencies on other modules)
+# ============================================================================
+module "iam_scp_events" {
+  source = "./modules/iam-scp-events"
+
+  providers = {
+    aws.us_east_1 = aws.us_east_1
+  }
+
+  email_recipients = var.email_recipients
+  tags             = var.tags
+}
+
+# ============================================================================
+# Module: IAM (Depends on: DynamoDB, Storage, Notifications, Log Group)
+# ============================================================================
+module "iam" {
+  source = "./modules/iam"
+
+  aws_account_id = data.aws_caller_identity.current.account_id
+
+  dynamodb_table_arns = {
+    service_registry          = module.dynamodb.service_registry_table_arn
+    approved_services         = module.dynamodb.approved_services_table_arn
+    pending_regional_services = module.dynamodb.pending_regional_services_table_arn
+  }
+
+  dynamodb_gsi_arns = {
+    approved_services_index = "${module.dynamodb.approved_services_table_arn}/index/approval-status-index"
+    pending_regional_index  = module.dynamodb.pending_regional_gsi_arn
+  }
+
+  kms_key_arn            = module.dynamodb.kms_key_arn
+  s3_bucket_arn          = module.storage.baseline_bucket_arn
+  sns_alert_topic_arn    = module.notifications.alert_topic_arn
+  log_group_arn          = aws_cloudwatch_log_group.lambda_logs.arn
+  tags                   = var.tags
+}
+
+# ============================================================================
+# Module: Lambda (Depends on: IAM, DynamoDB, Storage, Notifications)
+# ============================================================================
+module "lambda" {
+  source = "./modules/lambda"
+
+  function_name = "aws-service-monitor"
+  role_arn      = module.iam.lambda_role_arn
+
+  dynamodb_table_names = {
+    service_registry          = module.dynamodb.service_registry_table_name
+    approved_services         = module.dynamodb.approved_services_table_name
+    pending_regional_services = module.dynamodb.pending_regional_services_table_name
+  }
+
+  s3_bucket_name           = module.storage.baseline_bucket_id
+  sns_alert_topic_arn      = module.notifications.alert_topic_arn
+  log_group_arn            = aws_cloudwatch_log_group.lambda_logs.arn
+  scp_name                 = var.scp_name
+  scp_sid                  = var.scp_sid
+  manage_scp_policy        = var.manage_scp_policy
+  require_scp_approval     = var.require_scp_approval
+  email_recipients         = var.email_recipients
+  sender_email             = var.sender_email
+  approved_services        = var.approved_services
+  enable_service_approval_workflow = var.enable_service_approval_workflow
+  approval_recipients      = var.approval_recipients
+  aws_region               = var.aws_region
+  tags                     = var.tags
+}
+
+# ============================================================================
+# Module: Events (Depends on: Lambda)
+# ============================================================================
+module "events" {
+  source = "./modules/events"
+
+  schedule_expression   = var.schedule_expression
+  lambda_function_arn   = module.lambda.lambda_function_arn
+  lambda_function_name  = module.lambda.lambda_function_name
+  tags                  = var.tags
+}
+
+# ============================================================================
+# Module: Monitoring (Depends on: Lambda, DynamoDB, Events, Notifications)
+# ============================================================================
+module "monitoring" {
+  source = "./modules/monitoring"
+
+  lambda_function_name                = module.lambda.lambda_function_name
+  lambda_function_arn                 = module.lambda.lambda_function_arn
+  dynamodb_registry_table_name        = module.dynamodb.service_registry_table_name
+  dynamodb_approved_services_table_name = module.dynamodb.approved_services_table_name
+  eventbridge_rule_name               = module.events.event_rule_name
+  sns_alert_topic_arn                 = module.notifications.alert_topic_arn
+  aws_region                          = var.aws_region
+  enable_cloudwatch_dashboard         = var.enable_cloudwatch_dashboard
+  tags                                = var.tags
 }
