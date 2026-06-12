@@ -10,11 +10,113 @@ resource "aws_cloudwatch_log_group" "lambda_logs" {
 }
 
 # ============================================================================
-# Create Lambda Role First (Required by DynamoDB KMS policy)
+# Create Permission Boundary First
 # ============================================================================
-# Temporary IAM role - will be updated with full policies later
+resource "aws_iam_policy" "lambda_permission_boundary" {
+  name        = "aws-service-monitor-lambda-boundary"
+  description = "Permission boundary limiting Lambda to only required services"
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Sid    = "AllowDynamoDBOperations"
+        Effect = "Allow"
+        Action = [
+          "dynamodb:GetItem",
+          "dynamodb:PutItem",
+          "dynamodb:UpdateItem",
+          "dynamodb:Query",
+          "dynamodb:Scan",
+          "dynamodb:BatchWriteItem"
+        ]
+        Resource = "*"
+      },
+      {
+        Sid    = "AllowS3Operations"
+        Effect = "Allow"
+        Action = [
+          "s3:PutObject",
+          "s3:PutObjectVersionTagging",
+          "s3:ListBucket"
+        ]
+        Resource = "*"
+      },
+      {
+        Sid    = "AllowOrganizationsOperations"
+        Effect = "Allow"
+        Action = [
+          "organizations:ListPolicies",
+          "organizations:DescribePolicy",
+          "organizations:UpdatePolicy"
+        ]
+        Resource = "*"
+      },
+      {
+        Sid    = "AllowSESOperations"
+        Effect = "Allow"
+        Action = [
+          "ses:SendEmail",
+          "ses:SendRawEmail"
+        ]
+        Resource = "*"
+      },
+      {
+        Sid    = "AllowCloudWatchAndLogging"
+        Effect = "Allow"
+        Action = [
+          "cloudwatch:PutMetricData",
+          "logs:CreateLogGroup",
+          "logs:CreateLogStream",
+          "logs:PutLogEvents"
+        ]
+        Resource = "*"
+      },
+      {
+        Sid    = "AllowKMSOperations"
+        Effect = "Allow"
+        Action = [
+          "kms:GenerateDataKey",
+          "kms:Decrypt",
+          "kms:DescribeKey"
+        ]
+        Resource = "*"
+      },
+      {
+        Sid    = "AllowSNSOperations"
+        Effect = "Allow"
+        Action = [
+          "sns:Publish"
+        ]
+        Resource = "*"
+      },
+      {
+        Sid    = "DenyDangerousActions"
+        Effect = "Deny"
+        Action = [
+          "iam:*",
+          "sts:AssumeRole",
+          "ec2:TerminateInstances",
+          "rds:DeleteDBInstance",
+          "rds:DeleteDBCluster",
+          "s3:DeleteBucket",
+          "organizations:DetachPolicy",
+          "organizations:DeletePolicy"
+        ]
+        Resource = "*"
+      }
+    ]
+  })
+
+  tags = var.tags
+}
+
+# ============================================================================
+# Create Lambda Role (with boundary applied)
+# ============================================================================
 resource "aws_iam_role" "lambda_role_temp" {
-  name = "aws-service-monitor-lambda-role"
+  name                 = "aws-service-monitor-lambda-role"
+  permissions_boundary = aws_iam_policy.lambda_permission_boundary.arn
 
   assume_role_policy = jsonencode({
     Version = "2012-10-17"
@@ -86,7 +188,7 @@ module "iam" {
   source = "./modules/iam"
 
   aws_account_id     = data.aws_caller_identity.current.account_id
-  existing_role_id   = aws_iam_role.lambda_role_temp.id
+  existing_role_id   = "aws-service-monitor-lambda-role"
 
   dynamodb_table_arns = {
     service_registry          = module.dynamodb.service_registry_table_arn
