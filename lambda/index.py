@@ -7,8 +7,10 @@ import logging
 import re
 import copy
 import hashlib
+import time
 from datetime import datetime
 from typing import List, Dict, Set, Tuple
+from botocore.config import Config
 
 logger = logging.getLogger()
 logger.setLevel(logging.INFO)
@@ -85,9 +87,9 @@ def calculate_baseline_checksum(services: Set[str]) -> str:
     return checksum
 
 
-def check_regional_availability(services: List[str], region: str = 'eu-west-2') -> Dict:
+def check_regional_availability(services: List[str], region: str = 'eu-west-2', timeout_per_service: int = 2) -> Dict:
     """
-    Check if services are available in a specific region.
+    Check if services are available in a specific region with timeout guards.
     Returns dict: {
         'service_name': {
             'available_in_region': bool,
@@ -97,27 +99,54 @@ def check_regional_availability(services: List[str], region: str = 'eu-west-2') 
 
     This is intelligence only - used for notifications and monitoring,
     NOT for SCP gating.
+
+    WAF Finding: Prevents timeout by adding per-service timeout and exit guards.
     """
     timestamp = datetime.utcnow().isoformat()
     result = {}
+    start_time = time.time()
+    max_check_duration = 240  # Exit early if approaching 300s Lambda timeout
 
     try:
-        # Check each service for regional availability
+        # Warn if too many services (100+ could cause timeout)
+        if len(services) > 150:
+            logger.warning(f"High number of services ({len(services)}) for regional check; may timeout")
+
         for service in services:
+            # Safety: if approaching timeout, exit early
+            elapsed = time.time() - start_time
+            if elapsed > max_check_duration:
+                logger.warning(f"Regional check timeout guard triggered after {service} ({elapsed:.1f}s elapsed); skipping remaining {len(services) - len(result)} services")
+                for remaining_service in services:
+                    if remaining_service not in result:
+                        result[remaining_service] = {
+                            'available_in_region': False,
+                            'checked_at': timestamp,
+                            'timeout': True
+                        }
+                break
+
             try:
-                # Try to create a boto3 client for this service in the target region
-                # If successful, service is likely available
-                client = boto3.client(service, region_name=region)
+                # Create client with timeout guards (WAF finding fix)
+                config = Config(
+                    connect_timeout=timeout_per_service,
+                    read_timeout=timeout_per_service,
+                    retries={'max_attempts': 0}  # No retries on regional checks
+                )
+                client = boto3.client(service, region_name=region, config=config)
                 available = True
+                logger.debug(f"Service {service} available in {region}")
             except Exception as e:
-                logger.debug(f"Service {service} not available in {region}: {str(e)}")
                 available = False
+                logger.debug(f"Service {service} not available in {region}: {str(e)}")
 
             result[service] = {
                 'available_in_region': available,
                 'checked_at': timestamp
             }
 
+        elapsed = time.time() - start_time
+        logger.info(f"Regional availability check completed in {elapsed:.1f}s for {len(result)} services")
         return result
 
     except Exception as e:
@@ -540,25 +569,60 @@ def get_tracked_services() -> Set[str]:
         return set()
 
 
-def validate_service_names(services: Set[str]) -> Tuple[Set[str], List[str]]:
-    """Validate service names against AWS naming conventions."""
+def get_known_aws_services() -> Set[str]:
+    """
+    Load list of known AWS services from boto3 session (WAF finding: service catalog validation).
+    This provides a baseline list of legitimate AWS services.
+    """
+    try:
+        # Use boto3's list of available services
+        from botocore.loaders import Loader
+        loader = Loader()
+        api_version = loader.list_api_versions('service-2')[0]
+
+        # Get all available service names from boto3
+        services = set(loader.list_available_services('service-2'))
+        logger.info(f"Loaded {len(services)} known AWS services from boto3 catalog")
+        return services
+    except Exception as e:
+        logger.warning(f"Could not load AWS service catalog from boto3: {str(e)}; using format-only validation")
+        return set()
+
+
+def validate_service_names(services: Set[str], known_services: Set[str] = None) -> Tuple[Set[str], List[str]]:
+    """
+    Validate service names against AWS naming conventions AND AWS service catalog.
+
+    WAF Finding Fix: Added service catalog validation to prevent injection of arbitrary
+    strings into SCP policy.
+    """
     valid_services = set()
     invalid_services = []
 
+    # Load known AWS services once (expensive operation)
+    if known_services is None:
+        known_services = get_known_aws_services()
+
     for service in services:
-        # Check format: lowercase alphanumeric + hyphens
+        # Check 1: Format validation (lowercase alphanumeric + hyphens)
         if not SERVICE_NAME_PATTERN.match(service):
             invalid_services.append(f"{service} (invalid format)")
             continue
 
-        # Check length
+        # Check 2: Length validation
         if len(service) > MAX_SERVICE_NAME_LENGTH:
             invalid_services.append(f"{service} (exceeds max length {MAX_SERVICE_NAME_LENGTH})")
             continue
 
-        # Check minimum length (avoid very short names)
+        # Check 3: Minimum length (avoid very short names)
         if len(service) < 2:
             invalid_services.append(f"{service} (too short)")
+            continue
+
+        # Check 4: AWS service catalog validation (if available)
+        if known_services and service not in known_services:
+            invalid_services.append(f"{service} (not in AWS service catalog - possible injection attempt)")
+            logger.warning(f"Service {service} not found in AWS catalog; possible injection attack")
             continue
 
         valid_services.add(service)
@@ -1472,8 +1536,11 @@ def lambda_handler(event, context):
             logger.info(f"Approved services: {len(approved_services)}")
 
         if new_services:
-            # Validate service names
-            valid_services, invalid_services = validate_service_names(new_services)
+            # Load known AWS services for catalog validation (WAF finding fix)
+            known_services = get_known_aws_services()
+
+            # Validate service names against format AND AWS service catalog
+            valid_services, invalid_services = validate_service_names(new_services, known_services)
 
             if not valid_services:
                 logger.error(f"All services failed validation: {invalid_services}")

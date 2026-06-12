@@ -212,8 +212,60 @@ resource "aws_dynamodb_table" "pending_regional_services" {
 }
 
 # IAM role for Lambda function
+# Permission boundary for Lambda role (T015 mitigation - WAF finding)
+resource "aws_iam_policy" "lambda_permission_boundary" {
+  name        = "aws-service-monitor-lambda-boundary"
+  description = "Permission boundary limiting Lambda to only required services"
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Sid    = "AllowRequiredServices"
+        Effect = "Allow"
+        Action = [
+          "dynamodb:*",
+          "organizations:ListPolicies",
+          "organizations:DescribePolicy",
+          "organizations:UpdatePolicy",
+          "ses:SendEmail",
+          "ses:SendRawEmail",
+          "s3:*",
+          "cloudwatch:PutMetricData",
+          "logs:CreateLogGroup",
+          "logs:CreateLogStream",
+          "logs:PutLogEvents",
+          "kms:GenerateDataKey",
+          "kms:Decrypt",
+          "kms:DescribeKey",
+          "sns:Publish"
+        ]
+        Resource = "*"
+      },
+      {
+        Sid    = "DenyDangerousActions"
+        Effect = "Deny"
+        Action = [
+          "iam:*",
+          "sts:AssumeRole",
+          "ec2:TerminateInstances",
+          "rds:DeleteDBInstance",
+          "rds:DeleteDBCluster",
+          "s3:DeleteBucket",
+          "organizations:DetachPolicy",
+          "organizations:DeletePolicy"
+        ]
+        Resource = "*"
+      }
+    ]
+  })
+
+  tags = var.tags
+}
+
 resource "aws_iam_role" "lambda_role" {
-  name = "aws-service-monitor-lambda-role"
+  name                 = "aws-service-monitor-lambda-role"
+  permissions_boundary = aws_iam_policy.lambda_permission_boundary.arn
 
   assume_role_policy = jsonencode({
     Version = "2012-10-17"
@@ -561,7 +613,7 @@ resource "aws_lambda_function" "service_monitor" {
 # CloudWatch Log Group for Lambda
 resource "aws_cloudwatch_log_group" "lambda_logs" {
   name              = "/aws/lambda/aws-service-monitor"
-  retention_in_days = 14
+  retention_in_days = 90  # Increased from 14 days for forensic analysis (WAF finding)
 
   tags = var.tags
 }
