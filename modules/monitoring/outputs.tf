@@ -1,11 +1,11 @@
 output "log_group_name" {
   description = "CloudWatch log group name"
-  value       = aws_cloudwatch_log_group.lambda_logs.name
+  value       = var.log_group_name
 }
 
 output "log_group_arn" {
-  description = "CloudWatch log group ARN"
-  value       = aws_cloudwatch_log_group.lambda_logs.arn
+  description = "CloudWatch log group ARN (computed)"
+  value       = "arn:aws:logs:${var.aws_region}:*:log-group:${var.log_group_name}"
 }
 
 output "dashboard_name" {

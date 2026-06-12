@@ -14,6 +14,8 @@ resource "aws_s3_bucket_versioning" "baseline_snapshots" {
 }
 
 resource "aws_s3_bucket_object_lock_configuration" "baseline_snapshots" {
+  depends_on = [aws_s3_bucket_versioning.baseline_snapshots]
+
   bucket = aws_s3_bucket.baseline_snapshots.id
 
   rule {

@@ -1,15 +1,7 @@
-# CloudWatch log group for Lambda function
-resource "aws_cloudwatch_log_group" "lambda_logs" {
-  name              = "/aws/lambda/${var.lambda_function_name}"
-  retention_in_days = 90
-
-  tags = var.tags
-}
-
 # CloudWatch metric filter for permission boundary deny hits
 resource "aws_cloudwatch_log_metric_filter" "permission_boundary_deny" {
   name           = "permission-boundary-deny-hits"
-  log_group_name = aws_cloudwatch_log_group.lambda_logs.name
+  log_group_name = var.log_group_name
   pattern        = "\"Baseline update failed\""
 
   metric_transformation {

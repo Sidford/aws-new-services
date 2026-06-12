@@ -39,6 +39,11 @@ variable "enable_cloudwatch_dashboard" {
   default     = true
 }
 
+variable "log_group_name" {
+  description = "CloudWatch log group name for Lambda function"
+  type        = string
+}
+
 variable "tags" {
   description = "Common tags for all resources"
   type        = map(string)

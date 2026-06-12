@@ -187,8 +187,10 @@ module "iam_scp_events" {
 module "iam" {
   source = "./modules/iam"
 
+  depends_on = [aws_iam_role.lambda_role_temp]
+
   aws_account_id     = data.aws_caller_identity.current.account_id
-  existing_role_id   = "aws-service-monitor-lambda-role"
+  existing_role_id   = aws_iam_role.lambda_role_temp.name
 
   dynamodb_table_arns = {
     service_registry          = module.dynamodb.service_registry_table_arn
@@ -259,6 +261,7 @@ module "monitoring" {
 
   lambda_function_name                = module.lambda.lambda_function_name
   lambda_function_arn                 = module.lambda.lambda_function_arn
+  log_group_name                      = aws_cloudwatch_log_group.lambda_logs.name
   dynamodb_registry_table_name        = module.dynamodb.service_registry_table_name
   dynamodb_approved_services_table_name = module.dynamodb.approved_services_table_name
   eventbridge_rule_name               = module.events.event_rule_name
