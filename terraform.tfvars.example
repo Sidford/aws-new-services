@@ -83,6 +83,10 @@ approval_recipients = [
 # ============================================================================
 # OPTIONAL CONFIGURATION
 # ============================================================================
+# Enable/disable CloudWatch dashboard creation
+# Set to false to reduce AWS costs if you don't use the dashboard
+enable_cloudwatch_dashboard = true
+
 # Add custom tags to all resources
 tags = {
   Project     = "AWS-Service-Monitor"
