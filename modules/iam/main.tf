@@ -4,6 +4,9 @@ data "aws_iam_role" "existing" {
   name  = var.existing_role_id
 }
 
+# Organization ID needed to construct valid SCP ARNs (policy/<org-id>/service_control_policy/<policy-id>)
+data "aws_organizations_organization" "current" {}
+
 # No role creation here - role is created at root module with permission boundary
 # This module only attaches policies to the existing role
 locals {
@@ -80,7 +83,7 @@ resource "aws_iam_role_policy" "lambda_scp_policy" {
       {
         Effect   = "Allow"
         Action   = ["organizations:DescribePolicy", "organizations:UpdatePolicy"]
-        Resource = "arn:aws:organizations::${var.aws_account_id}:policy/p-*"
+        Resource = "arn:aws:organizations::${var.aws_account_id}:policy/${data.aws_organizations_organization.current.id}/service_control_policy/p-*"
         Condition = {
           StringEquals = {
             "organizations:PolicyType" = "SERVICE_CONTROL_POLICY"
