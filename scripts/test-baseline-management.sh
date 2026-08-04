@@ -10,7 +10,7 @@ DYNAMODB_TABLE="${DYNAMODB_TABLE:-aws-service-monitor-registry}"
 AWS_REGION="${AWS_REGION:-eu-west-2}"
 AWS_PROFILE="${AWS_PROFILE:-sidford-mgmt}"
 BASELINE_MARKER="__baseline_initialized__"
-BACKUP_FILE="/tmp/baseline_backup_$(date +%s).json"
+BACKUP_FILE="/tmp/baseline_backup_${DYNAMODB_TABLE}.json"
 
 # Colors for output
 RED='\033[0;31m'
@@ -60,29 +60,27 @@ backup_baseline() {
         return 1
     fi
 
-    # Get all services (excluding metadata)
-    services=$(aws dynamodb scan \
+    # Get all services (excluding metadata) as a JSON array, sorted to match
+    # the Lambda's own checksum calculation (sorted(list(services)) in Python)
+    services_json=$(aws dynamodb scan \
         --table-name "$DYNAMODB_TABLE" \
         --filter-expression "NOT begins_with(service_name, :prefix)" \
         --expression-attribute-values "{\":prefix\":{\"S\":\"__\"}}" \
         --projection-expression "service_name" \
         --region "$AWS_REGION" \
         --profile "$AWS_PROFILE" \
-        --output json | jq -r '.Items[].service_name.S' | sort)
+        --output json | jq -c '[.Items[].service_name.S] | sort')
 
-    service_count=$(echo "$services" | wc -l)
+    service_count=$(echo "$services_json" | jq 'length')
 
-    # Create backup file
-    cat > "$BACKUP_FILE" <<EOF
-{
-  "timestamp": "$(date -u +%Y-%m-%dT%H:%M:%SZ)",
-  "checksum": "$checksum",
-  "service_count": $service_count,
-  "services": [
-$(echo "$services" | jq -R -s -c '[inputs] | map(select(length > 0))' | jq '.[0][]' 2>/dev/null | awk '{print "    \"" $0 "\""}' | paste -sd, - | sed 's/,$//')
-  ]
-}
-EOF
+    # Create backup file (built entirely with jq to avoid string-interpolation bugs)
+    jq -n \
+        --arg timestamp "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+        --arg checksum "$checksum" \
+        --argjson service_count "$service_count" \
+        --argjson services "$services_json" \
+        '{timestamp: $timestamp, checksum: $checksum, service_count: $service_count, services: $services}' \
+        > "$BACKUP_FILE"
 
     log_success "Baseline backed up to: $BACKUP_FILE"
     log_info "  Checksum: ${checksum:0:8}..."
@@ -118,7 +116,11 @@ test_service_removal() {
 
     log_success "Service deleted: $service_to_remove"
 
-    # Get remaining services
+    # Get remaining services (unsorted here - sorting happens in Python below,
+    # to exactly match calculate_baseline_checksum() in lambda/index.py. Shell
+    # `sort` is locale-dependent and can order strings differently than
+    # Python's sorted(), which silently produces a wrong checksum and trips
+    # the Lambda's tamper-detection alert.)
     remaining=$(aws dynamodb scan \
         --table-name "$DYNAMODB_TABLE" \
         --filter-expression "NOT begins_with(service_name, :prefix)" \
@@ -126,17 +128,19 @@ test_service_removal() {
         --projection-expression "service_name" \
         --region "$AWS_REGION" \
         --profile "$AWS_PROFILE" \
-        --output json | jq -r '.Items[].service_name.S' | sort)
+        --output json | jq -r '.Items[].service_name.S')
 
     remaining_count=$(echo "$remaining" | grep -c . || true)
 
-    # Calculate new checksum for remaining services
-    new_checksum=$(python3 -c "
+    # Calculate new checksum for remaining services (piped via stdin, not
+    # string-interpolated, to avoid shell-quoting/injection issues with
+    # service names)
+    new_checksum=$(echo "$remaining" | python3 -c "
 import json
 import hashlib
-services = '''$remaining'''.strip().split('\n')
-services = [s for s in services if s]
-service_string = json.dumps(services, separators=(',', ':'))
+import sys
+services = [s.strip() for s in sys.stdin if s.strip()]
+service_string = json.dumps(sorted(services), separators=(',', ':'))
 checksum = hashlib.sha256(service_string.encode()).hexdigest()
 print(checksum)
 ")
@@ -195,6 +199,9 @@ restore_baseline() {
 
     # Find and restore missing services
     while IFS= read -r service; do
+        if [ -z "$service" ]; then
+            continue
+        fi
         if ! echo "$current_services" | grep -q "^${service}$"; then
             log_info "Re-adding service: $service"
             aws dynamodb put-item \
