@@ -10,7 +10,7 @@ DYNAMODB_TABLE="${DYNAMODB_TABLE:-aws-service-monitor-registry}"
 AWS_REGION="${AWS_REGION:-eu-west-2}"
 AWS_PROFILE="${AWS_PROFILE:-sidford-mgmt}"
 BASELINE_MARKER="__baseline_initialized__"
-BACKUP_FILE="/tmp/baseline_backup_$(date +%s).json"
+BACKUP_FILE="/tmp/baseline_backup_${DYNAMODB_TABLE}.json"
 
 # Colors for output
 RED='\033[0;31m'
