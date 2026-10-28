@@ -203,6 +203,7 @@ module "iam" {
     pending_regional_index  = module.dynamodb.pending_regional_gsi_arn
   }
 
+  manage_scp_policy      = var.manage_scp_policy
   kms_key_arn            = module.dynamodb.kms_key_arn
   s3_bucket_arn          = module.storage.baseline_bucket_arn
   sns_alert_topic_arn    = module.notifications.alert_topic_arn

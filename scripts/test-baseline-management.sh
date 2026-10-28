@@ -38,6 +38,13 @@ log_error() {
 
 # Backup current baseline state
 backup_baseline() {
+    # Never overwrite an existing backup — the first backup represents the true
+    # original state; a second call (e.g. via nested `remove`) must not clobber it.
+    if [ -f "$BACKUP_FILE" ]; then
+        log_warn "Backup already exists at $BACKUP_FILE — skipping to preserve original state"
+        return 0
+    fi
+
     log_info "Backing up current baseline state..."
 
     # Get baseline marker
@@ -202,7 +209,7 @@ restore_baseline() {
         if [ -z "$service" ]; then
             continue
         fi
-        if ! echo "$current_services" | grep -q "^${service}$"; then
+        if ! echo "$current_services" | grep -qxF "$service"; then
             log_info "Re-adding service: $service"
             aws dynamodb put-item \
                 --table-name "$DYNAMODB_TABLE" \

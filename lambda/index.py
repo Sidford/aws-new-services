@@ -1,8 +1,10 @@
 import json
 import os
 import html
+import ssl
+import urllib.request
+import urllib.error
 import boto3
-import requests
 import logging
 import re
 import copy
@@ -47,13 +49,15 @@ BASELINE_MARKER = "__baseline_initialized__"
 def fetch_aws_services() -> Set[str]:
     """Fetch AWS services with HTTPS certificate validation."""
     try:
-        response = requests.get(
-            SERVICE_REFERENCE_URL,
-            timeout=30,
-            verify=True  # Enforce HTTPS certificate validation
-        )
-        response.raise_for_status()
-        data = response.json()
+        # ssl.create_default_context() validates certificates by default —
+        # same security guarantee as requests' verify=True.
+        ctx = ssl.create_default_context()
+        req = urllib.request.Request(SERVICE_REFERENCE_URL)
+        with urllib.request.urlopen(req, timeout=30, context=ctx) as response:
+            if response.status != 200:
+                logger.error(f"Unexpected HTTP status {response.status} from service reference")
+                return set()
+            data = json.loads(response.read().decode('utf-8'))
 
         services = set()
         if isinstance(data, list):
@@ -67,11 +71,14 @@ def fetch_aws_services() -> Set[str]:
         logger.info(f"Fetched {len(services)} services from AWS reference")
         return services
 
-    except requests.exceptions.SSLError as e:
+    except ssl.SSLError as e:
         logger.error(f"SSL certificate validation failed: {str(e)}")
         return set()
-    except requests.exceptions.RequestException as e:
-        logger.error(f"Failed to fetch AWS services: {str(e)}")
+    except urllib.error.URLError as e:
+        if isinstance(e.reason, ssl.SSLError):
+            logger.error(f"SSL certificate validation failed: {str(e.reason)}")
+        else:
+            logger.error(f"Failed to fetch AWS services: {str(e)}")
         return set()
     except (json.JSONDecodeError, KeyError, TypeError) as e:
         logger.error(f"Failed to parse service reference response: {str(e)}")
@@ -1541,11 +1548,6 @@ def lambda_handler(event, context):
         logger.info(f"Tracked services: {len(tracked_services)}")
         logger.info(f"New services: {len(new_services)}")
 
-        # Load approved services (excluded from SCP deny list)
-        approved_services = get_approved_services()
-        if approved_services:
-            logger.info(f"Approved services: {len(approved_services)}")
-
         if new_services:
             # Load known AWS services for catalog validation (WAF finding fix)
             known_services = get_known_aws_services()
@@ -1583,6 +1585,8 @@ def lambda_handler(event, context):
 
             # Filter out approved services — they are tracked but not added to the SCP deny list
             approved_services = get_approved_services()
+            if approved_services:
+                logger.info(f"Approved services: {len(approved_services)}")
             approved_from_new = [s for s in new_services_list if s in approved_services]
             services_for_scp = [s for s in new_services_list if s not in approved_services]
 
