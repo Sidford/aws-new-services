@@ -11,7 +11,6 @@ The Lambda function code is **embedded directly in `template.yaml`** using Cloud
 | File | Purpose |
 |------|---------|
 | `template.yaml` | Single stack — all resources + embedded Lambda code |
-| `deploy.sh` | Helper script: uploads the template to S3 and deploys the stack |
 | `parameters.example.json` | Annotated parameter reference |
 
 ## Prerequisites
@@ -23,49 +22,12 @@ The Lambda function code is **embedded directly in `template.yaml`** using Cloud
 | AWS Organizations | The account must be the management account if `ManageScpPolicy=true` |
 
 > **Why S3 for the template?**  CloudFormation's `--template-body` direct-upload limit is 51 KB.
-> `template.yaml` is ~105 KB (Lambda code is embedded), so the script uploads it to S3 and
-> deploys via `--template-url`.  A single small S3 bucket is created automatically.
+> `template.yaml` is ~105 KB (Lambda code is embedded), so it must be uploaded to S3 first and
+> deployed via `--template-url`.
 
 ---
 
-## Quick start — deploy.sh
-
-The script handles the full workflow in one command:
-
-```bash
-chmod +x cloudformation/deploy.sh
-
-./cloudformation/deploy.sh \
-  --region  eu-west-2 \
-  --email   '["ops@example.com","security@example.com"]' \
-  --sender  notifications@example.com
-```
-
-The script will:
-1. Create/reuse an S3 bucket (`aws-service-monitor-deploy-<account>-<region>`).
-2. Upload `template.yaml` to that bucket.
-3. Validate the template via CloudFormation.
-4. Show a change-set diff and prompt for approval before deploying.
-
-### All options
-
-```text
---stack-name NAME       Stack name                  (default: aws-service-monitor)
---region REGION         Deployment region           (default: eu-west-2)
---deploy-bucket BUCKET  S3 bucket for the template  (auto-created if omitted)
---email EMAILS          JSON array of recipients    (e.g. '["ops@example.com"]')
---sender EMAIL          SES verified sender address
---no-approve            Skip change-set approval prompt (CI mode)
-```
-
-Environment variables `STACK_NAME`, `DEPLOY_REGION`, `DEPLOY_BUCKET`,
-`EMAIL_RECIPIENTS`, and `SENDER_EMAIL` are honoured as defaults.
-
----
-
-## Manual deployment
-
-If you prefer to drive the AWS CLI directly:
+## Quick start
 
 ### 1 — Upload the template to S3
 
@@ -74,13 +36,12 @@ ACCOUNT=$(aws sts get-caller-identity --query Account --output text)
 REGION=eu-west-2
 BUCKET="aws-service-monitor-deploy-${ACCOUNT}-${REGION}"
 
-# Create the bucket (skip if it already exists)
+# Create the bucket once (skip if it already exists)
 aws s3 mb "s3://${BUCKET}" --region "$REGION"
 
 # Upload
 aws s3 cp cloudformation/template.yaml \
-  "s3://${BUCKET}/aws-service-monitor/template.yaml" \
-  --region "$REGION"
+  "s3://${BUCKET}/aws-service-monitor/template.yaml"
 ```
 
 ### 2 — Deploy the stack
@@ -93,15 +54,13 @@ aws cloudformation deploy \
   --capabilities CAPABILITY_NAMED_IAM \
   --parameter-overrides \
     EmailRecipients='["ops@example.com"]' \
-    SenderEmail=notifications@example.com \
-    ManageScpPolicy=true \
-    ScpName=blacklist \
-    ScpSid=BlockNewServices \
-    RequireScpApproval=true \
-    OrganizationId=o-xxxxxxxxxxxx
+    SenderEmail=notifications@example.com
 ```
 
-Or use a parameters file:
+`aws cloudformation deploy` automatically creates a change-set, waits for it to complete, and
+handles both first-time creates and subsequent updates.
+
+### Using a parameters file
 
 ```bash
 cp cloudformation/parameters.example.json cloudformation/parameters.json
@@ -189,8 +148,8 @@ aws logs tail /aws/lambda/aws-service-monitor --region eu-west-2 --follow
 
 ## Updating the stack
 
-Re-run `deploy.sh` (or upload the template and run `aws cloudformation deploy`) after any change
-to `template.yaml`.  The script shows a change-set diff before applying.
+Re-upload `template.yaml` to S3 and re-run `aws cloudformation deploy` after any change.
+CloudFormation will diff the change-set and apply only what changed.
 
 ---
 
@@ -251,4 +210,3 @@ The stack is already up to date — no changes needed.
 
 **Template validation error: "Template format error: Template size ... exceeds limit"**
 Make sure you are using `--template-url` (pointing to the S3-hosted copy), not `--template-body`.
-The `deploy.sh` script handles this automatically.
