@@ -1,0 +1,32 @@
+[
+  {
+    "ParameterKey": "EmailRecipients",
+    "ParameterValue": "[\"ops@example.com\",\"security@example.com\"]",
+    "Description": "JSON array of email addresses to receive notifications. Each address must be quoted."
+  },
+  {
+    "ParameterKey": "SenderEmail",
+    "ParameterValue": "notifications@example.com",
+    "Description": "SES-verified sender address. Run: aws ses verify-email-identity --email-address <addr> --region <region>"
+  },
+  {
+    "ParameterKey": "ApprovalRecipients",
+    "ParameterValue": "[]",
+    "Description": "JSON array of email addresses for approval request notifications. Defaults to EmailRecipients when []."
+  },
+  {
+    "ParameterKey": "ManageScpPolicy",
+    "ParameterValue": "true",
+    "Description": "Set to false for notifications-only mode (no SCP modifications)"
+  },
+  {
+    "ParameterKey": "OrganizationId",
+    "ParameterValue": "",
+    "Description": "Your AWS Organizations ID (e.g. o-xxxxxxxxxxxx) for least-privilege IAM scoping. Leave empty to allow any org policy ARN."
+  },
+  {
+    "ParameterKey": "EnableServiceApprovalWorkflow",
+    "ParameterValue": "true",
+    "Description": "Enable the manual approval workflow for moving services from deny-list to approved list"
+  }
+]
