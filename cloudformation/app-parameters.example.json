@@ -1,0 +1,37 @@
+[
+  {
+    "ParameterKey": "InfrastructureStackName",
+    "ParameterValue": "aws-service-monitor-infra",
+    "Description": "Name of the infrastructure stack to import outputs from. Must be deployed first."
+  },
+  {
+    "ParameterKey": "ScpName",
+    "ParameterValue": "blacklist",
+    "Description": "Name of the existing SCP to update with newly detected services"
+  },
+  {
+    "ParameterKey": "ScpSid",
+    "ParameterValue": "BlockNewServices",
+    "Description": "Statement ID (Sid) in the SCP. Only this statement is modified."
+  },
+  {
+    "ParameterKey": "RequireScpApproval",
+    "ParameterValue": "true",
+    "Description": "true = notify only, false = apply SCP changes automatically"
+  },
+  {
+    "ParameterKey": "ApprovedServices",
+    "ParameterValue": "[\"ec2\",\"s3\",\"lambda\",\"dynamodb\",\"cloudformation\"]",
+    "Description": "JSON array of services approved for use and excluded from the SCP deny-list"
+  },
+  {
+    "ParameterKey": "ScheduleExpression",
+    "ParameterValue": "cron(0 8 * * ? *)",
+    "Description": "EventBridge schedule: daily at 08:00 UTC. Change to e.g. cron(0 6 * * ? *) for 06:00 UTC."
+  },
+  {
+    "ParameterKey": "EnableCloudWatchDashboard",
+    "ParameterValue": "true",
+    "Description": "Create a CloudWatch dashboard for monitoring"
+  }
+]

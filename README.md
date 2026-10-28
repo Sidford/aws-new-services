@@ -4,6 +4,7 @@
 
 [![AWS](https://img.shields.io/badge/AWS-Management%20Account-FF9900?logo=amazon-aws)](https://aws.amazon.com)
 [![Terraform](https://img.shields.io/badge/IaC-Terraform%20v1.0%2B-844FBA?logo=terraform)](https://terraform.io)
+[![CloudFormation](https://img.shields.io/badge/IaC-CloudFormation-FF4F00?logo=amazon-aws)](cloudformation/)
 [![Python](https://img.shields.io/badge/Lambda-Python%203.11-3776AB?logo=python)](https://www.python.org/)
 [![Status](https://img.shields.io/badge/Status-Production%20Ready-green)](#)
 
@@ -35,11 +36,11 @@ Automatically monitor AWS for new services and manage Service Control Policy bla
 
 ## ⚡ Quick Start
 
-### 1️⃣ Prerequisites
+> **Two deployment options** — CloudFormation (no extra tooling) or Terraform/OpenTofu.
+
+### Prerequisites
 
 ```bash
-# Verify requirements installed
-terraform version    # v1.0+
 aws --version       # AWS CLI v2
 aws ses list-verified-email-addresses
 ```
@@ -49,13 +50,74 @@ aws ses list-verified-email-addresses
 - ✅ SES verified email addresses
 - ✅ Existing SCP named "blacklist"
 
-### 2️⃣ Configure
+---
+
+### Option A — CloudFormation (recommended)
+
+The stack is split into two templates so the durable foundation (IAM, KMS, DynamoDB, S3, SNS) is deployed once and the compute layer (Lambda, alarms, dashboard) is updated independently whenever the code changes.
+
+#### 1️⃣ Configure
 
 ```bash
-# Copy example configuration
-cp terraform/terraform.tfvars.example terraform/terraform.tfvars
+cp cloudformation/infra-parameters.example.json  cloudformation/infra-parameters.json
+cp cloudformation/app-parameters.example.json    cloudformation/app-parameters.json
 
-# Edit with your settings
+# Edit both files with your email addresses, org ID, etc.
+```
+
+#### 2️⃣ Deploy — infrastructure stack (once)
+
+```bash
+aws cloudformation deploy \
+  --template-file cloudformation/infrastructure.yaml \
+  --stack-name aws-service-monitor-infra \
+  --parameter-overrides file://cloudformation/infra-parameters.json \
+  --capabilities CAPABILITY_NAMED_IAM \
+  --region eu-west-2
+```
+
+**Creates**: IAM role + permission boundary, KMS key, 3 DynamoDB tables, S3 baseline bucket, SNS topic, CloudWatch log group, all IAM policies.
+
+#### 3️⃣ Deploy — application stack
+
+```bash
+aws cloudformation deploy \
+  --template-file cloudformation/application.yaml \
+  --stack-name aws-service-monitor-app \
+  --parameter-overrides file://cloudformation/app-parameters.json \
+  --capabilities CAPABILITY_NAMED_IAM \
+  --region eu-west-2
+```
+
+**Creates**: Lambda function, EventBridge daily schedule, 10 CloudWatch alarms, CloudWatch dashboard.
+
+> Re-run only this command whenever the Lambda code or alarm thresholds change.
+
+#### 4️⃣ Verify
+
+```bash
+# Check stacks are complete
+aws cloudformation describe-stacks \
+  --stack-name aws-service-monitor-infra --region eu-west-2 \
+  --query 'Stacks[0].StackStatus'
+
+aws cloudformation describe-stacks \
+  --stack-name aws-service-monitor-app --region eu-west-2 \
+  --query 'Stacks[0].StackStatus'
+
+# Test the Lambda manually
+aws lambda invoke --function-name aws-service-monitor \
+  --region eu-west-2 response.json && cat response.json
+```
+
+---
+
+### Option B — Terraform / OpenTofu
+
+#### 1️⃣ Configure
+
+```bash
+cp terraform/terraform.tfvars.example terraform/terraform.tfvars
 vim terraform/terraform.tfvars
 ```
 
@@ -67,7 +129,7 @@ email_recipients = ["ops-team@example.com"]
 sender_email     = "aws-monitor@example.com"
 ```
 
-### 3️⃣ Deploy
+#### 2️⃣ Deploy
 
 ```bash
 cd terraform
@@ -77,23 +139,11 @@ terraform plan
 terraform apply
 ```
 
-**Resources Created**:
-- ⚡ Lambda function (Python 3.11)
-- 💾 DynamoDB table with PITR
-- 📅 EventBridge daily schedule
-- 📊 CloudWatch Dashboard
-- 🚨 8 SNS-linked alarms
-- 📦 S3 immutable snapshots
-- 📝 CloudWatch log group
-
-### 4️⃣ Verify
+#### 3️⃣ Verify
 
 ```bash
-# Check lambda deployed
+# Check Lambda deployed
 aws lambda list-functions | grep aws-service-monitor
-
-# View CloudWatch Dashboard
-# https://console.aws.amazon.com/cloudwatch/home?region=eu-west-2#dashboards:name=aws-service-monitor
 
 # Test manually
 aws lambda invoke --function-name aws-service-monitor /dev/stdout | jq '.'

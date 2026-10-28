@@ -1,0 +1,785 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: >
+  AWS Service Monitor — Infrastructure stack.
+  Creates all stateful/foundational resources: IAM, KMS, DynamoDB, S3, SNS,
+  and the CloudWatch log group. Deploy this stack first; the application stack
+  imports its outputs via cross-stack references.
+
+# ==============================================================================
+# Metadata — groups parameters in the CloudFormation console
+# ==============================================================================
+Metadata:
+  AWS::CloudFormation::Interface:
+    ParameterGroups:
+      - Label:
+          default: "Notifications"
+        Parameters:
+          - EmailRecipients
+          - SenderEmail
+          - ApprovalRecipients
+      - Label:
+          default: "SCP Management"
+        Parameters:
+          - ManageScpPolicy
+          - OrganizationId
+      - Label:
+          default: "Service Approval Workflow"
+        Parameters:
+          - EnableServiceApprovalWorkflow
+    ParameterLabels:
+      EmailRecipients:
+        default: "Email Recipients (JSON array)"
+      SenderEmail:
+        default: "Sender Email Address"
+
+# ==============================================================================
+# Parameters
+# ==============================================================================
+Parameters:
+
+  # ---------- Notifications -------------------------------------------------
+  EmailRecipients:
+    Type: String
+    Description: >
+      JSON array of email addresses to receive notifications.
+      Example: ["ops@example.com","security@example.com"]
+    AllowedPattern: '^\[".+"\]$'
+    ConstraintDescription: >
+      Must be a valid JSON array of quoted email strings,
+      e.g. ["ops@example.com"] or ["a@b.com","c@d.com"]
+
+  SenderEmail:
+    Type: String
+    Description: >
+      Email address used to send notifications. Must be verified in SES
+      in the deployment region before the Lambda can send mail.
+
+  ApprovalRecipients:
+    Type: String
+    Default: "[]"
+    Description: >
+      JSON array of email addresses for approval requests. Defaults to
+      EmailRecipients when set to [].
+      Example: ["approver@example.com"]
+
+  # ---------- SCP management ------------------------------------------------
+  ManageScpPolicy:
+    Type: String
+    Default: "true"
+    AllowedValues:
+      - "true"
+      - "false"
+    Description: >
+      Enable automatic SCP policy management. Set to "false" for
+      notifications-only mode (detects services and sends emails but does
+      NOT modify SCP policies).
+
+  OrganizationId:
+    Type: String
+    Default: ""
+    Description: >
+      AWS Organizations ID (e.g. o-xxxxxxxxxxxx) to scope the SCP IAM
+      permission to least-privilege. Leave empty to allow any org policy ARN.
+
+  # ---------- Service approval workflow -------------------------------------
+  EnableServiceApprovalWorkflow:
+    Type: String
+    Default: "true"
+    AllowedValues:
+      - "true"
+      - "false"
+    Description: >
+      Enable manual approval workflow for services moving from the deny-list
+      to the approved list.
+
+# ==============================================================================
+# Conditions
+# ==============================================================================
+Conditions:
+  ManageScp:        !Equals [!Ref ManageScpPolicy, "true"]
+  OrgIdProvided:    !Not [!Equals [!Ref OrganizationId, ""]]
+  HasApprovalRecipients: !Not [!Equals [!Ref ApprovalRecipients, "[]"]]
+
+# ==============================================================================
+# Resources
+# ==============================================================================
+Resources:
+
+  # ============================================================================
+  # Permission boundary — created first so the role can reference it
+  # ============================================================================
+  LambdaPermissionBoundary:
+    Type: AWS::IAM::ManagedPolicy
+    Properties:
+      ManagedPolicyName: aws-service-monitor-lambda-boundary
+      Description: Limits the Lambda execution role to only the services it needs
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Sid: AllowDynamoDBOperations
+            Effect: Allow
+            Action:
+              - dynamodb:GetItem
+              - dynamodb:PutItem
+              - dynamodb:UpdateItem
+              - dynamodb:Query
+              - dynamodb:Scan
+              - dynamodb:BatchWriteItem
+            Resource: "*"
+          - Sid: AllowS3Operations
+            Effect: Allow
+            Action:
+              - s3:PutObject
+              - s3:PutObjectVersionTagging
+              - s3:ListBucket
+            Resource: "*"
+          - Sid: AllowOrganizationsOperations
+            Effect: Allow
+            Action:
+              - organizations:ListPolicies
+              - organizations:DescribePolicy
+              - organizations:UpdatePolicy
+            Resource: "*"
+          - Sid: AllowSESOperations
+            Effect: Allow
+            Action:
+              - ses:SendEmail
+              - ses:SendRawEmail
+            Resource: "*"
+          - Sid: AllowCloudWatchAndLogging
+            Effect: Allow
+            Action:
+              - cloudwatch:PutMetricData
+              - logs:CreateLogGroup
+              - logs:CreateLogStream
+              - logs:PutLogEvents
+            Resource: "*"
+          - Sid: AllowKMSOperations
+            Effect: Allow
+            Action:
+              - kms:GenerateDataKey
+              - kms:Decrypt
+              - kms:DescribeKey
+            Resource: "*"
+          - Sid: AllowSNSOperations
+            Effect: Allow
+            Action:
+              - sns:Publish
+            Resource: "*"
+          - Sid: DenyDangerousActions
+            Effect: Deny
+            Action:
+              - "iam:*"
+              - sts:AssumeRole
+              - ec2:TerminateInstances
+              - rds:DeleteDBInstance
+              - rds:DeleteDBCluster
+              - s3:DeleteBucket
+              - organizations:DetachPolicy
+              - organizations:DeletePolicy
+            Resource: "*"
+
+  # ============================================================================
+  # Lambda execution role
+  # ============================================================================
+  LambdaExecutionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: aws-service-monitor-lambda-role
+      PermissionsBoundary: !Ref LambdaPermissionBoundary
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      Tags:
+        - Key: Project
+          Value: AWS-Service-Monitor
+        - Key: ManagedBy
+          Value: CloudFormation
+
+  # ============================================================================
+  # KMS customer-managed key for DynamoDB at-rest encryption
+  # LambdaExecutionRole must exist first (referenced in key policy)
+  # ============================================================================
+  DynamoDBKMSKey:
+    Type: AWS::KMS::Key
+    Properties:
+      Description: CMK for aws-service-monitor DynamoDB tables
+      EnableKeyRotation: true
+      PendingWindowInDays: 14
+      KeyPolicy:
+        Version: "2012-10-17"
+        Statement:
+          - Sid: AllowAccountAdmin
+            Effect: Allow
+            Principal:
+              AWS: !Sub "arn:aws:iam::${AWS::AccountId}:root"
+            Action: "kms:*"
+            Resource: "*"
+          - Sid: AllowLambdaEncryptDecrypt
+            Effect: Allow
+            Principal:
+              AWS: !GetAtt LambdaExecutionRole.Arn
+            Action:
+              - kms:GenerateDataKey
+              - kms:Decrypt
+            Resource: "*"
+      Tags:
+        - Key: Project
+          Value: AWS-Service-Monitor
+        - Key: ManagedBy
+          Value: CloudFormation
+
+  DynamoDBKMSKeyAlias:
+    Type: AWS::KMS::Alias
+    Properties:
+      AliasName: alias/aws-service-monitor-dynamodb
+      TargetKeyId: !Ref DynamoDBKMSKey
+
+  # ============================================================================
+  # DynamoDB tables
+  # ============================================================================
+  ServiceRegistryTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: aws-service-monitor-registry
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - AttributeName: service_name
+          AttributeType: S
+      KeySchema:
+        - AttributeName: service_name
+          KeyType: HASH
+      PointInTimeRecoverySpecification:
+        PointInTimeRecoveryEnabled: true
+      SSESpecification:
+        SSEEnabled: true
+        SSEType: KMS
+        KMSMasterKeyId: !Ref DynamoDBKMSKey
+      Tags:
+        - Key: Project
+          Value: AWS-Service-Monitor
+        - Key: ManagedBy
+          Value: CloudFormation
+
+  ApprovedServicesTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: aws-service-monitor-approved-services
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - AttributeName: service_name
+          AttributeType: S
+        - AttributeName: approval_status
+          AttributeType: S
+      KeySchema:
+        - AttributeName: service_name
+          KeyType: HASH
+      GlobalSecondaryIndexes:
+        - IndexName: approval-status-index
+          KeySchema:
+            - AttributeName: approval_status
+              KeyType: HASH
+          Projection:
+            ProjectionType: ALL
+      PointInTimeRecoverySpecification:
+        PointInTimeRecoveryEnabled: true
+      SSESpecification:
+        SSEEnabled: true
+        SSEType: KMS
+        KMSMasterKeyId: !Ref DynamoDBKMSKey
+      Tags:
+        - Key: Project
+          Value: AWS-Service-Monitor
+        - Key: ManagedBy
+          Value: CloudFormation
+
+  PendingRegionalServicesTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: aws-service-monitor-pending-regional
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - AttributeName: service_name
+          AttributeType: S
+        - AttributeName: detected_at
+          AttributeType: S
+        - AttributeName: region_name
+          AttributeType: S
+        - AttributeName: available_in_region
+          AttributeType: N
+      KeySchema:
+        - AttributeName: service_name
+          KeyType: HASH
+        - AttributeName: detected_at
+          KeyType: RANGE
+      GlobalSecondaryIndexes:
+        - IndexName: region-name-index
+          KeySchema:
+            - AttributeName: region_name
+              KeyType: HASH
+            - AttributeName: available_in_region
+              KeyType: RANGE
+          Projection:
+            ProjectionType: ALL
+      PointInTimeRecoverySpecification:
+        PointInTimeRecoveryEnabled: true
+      SSESpecification:
+        SSEEnabled: true
+        SSEType: KMS
+        KMSMasterKeyId: !Ref DynamoDBKMSKey
+      Tags:
+        - Key: Project
+          Value: AWS-Service-Monitor
+        - Key: ManagedBy
+          Value: CloudFormation
+
+  # ============================================================================
+  # S3 bucket for immutable baseline snapshots (T004 mitigation)
+  # Object Lock + GOVERNANCE retention prevents tampering
+  # ============================================================================
+  BaselineSnapshotsBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Sub "service-monitor-baseline-${AWS::AccountId}-${AWS::Region}"
+      ObjectLockEnabled: true
+      ObjectLockConfiguration:
+        ObjectLockEnabled: Enabled
+        Rule:
+          DefaultRetention:
+            Mode: GOVERNANCE
+            Days: 90
+      VersioningConfiguration:
+        Status: Enabled
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: AES256
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      LifecycleConfiguration:
+        Rules:
+          - Id: DeleteOldSnapshots
+            Status: Enabled
+            ExpirationInDays: 365
+            NoncurrentVersionExpiration:
+              NoncurrentDays: 90
+      Tags:
+        - Key: Project
+          Value: AWS-Service-Monitor
+        - Key: ManagedBy
+          Value: CloudFormation
+
+  # ============================================================================
+  # SNS topic for operational alerts
+  # ============================================================================
+  AlertsTopic:
+    Type: AWS::SNS::Topic
+    Properties:
+      TopicName: aws-service-monitor-alerts
+      Tags:
+        - Key: Project
+          Value: AWS-Service-Monitor
+        - Key: ManagedBy
+          Value: CloudFormation
+
+  # ---- Custom resource: create email subscriptions from a JSON list --------
+  # CloudFormation cannot iterate over a list to create N subscriptions,
+  # so a helper Lambda parses the comma-delimited / JSON list and calls
+  # sns:Subscribe for each address.
+
+  SubscriptionsHelperRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: aws-service-monitor-cfn-subscriptions-helper
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: sns-subscribe-and-log
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action:
+                  - sns:Subscribe
+                  - sns:Unsubscribe
+                  - sns:ListSubscriptionsByTopic
+                Resource: !Ref AlertsTopic
+              - Effect: Allow
+                Action:
+                  - logs:CreateLogGroup
+                  - logs:CreateLogStream
+                  - logs:PutLogEvents
+                Resource: !Sub "arn:aws:logs:${AWS::Region}:${AWS::AccountId}:log-group:*"
+
+  SubscriptionsHelperFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: aws-service-monitor-cfn-subscriptions-helper
+      Runtime: python3.11
+      Handler: index.handler
+      Role: !GetAtt SubscriptionsHelperRole.Arn
+      Timeout: 60
+      Description: >
+        CloudFormation custom resource — creates/removes SNS email subscriptions
+        from a JSON list. Cleaned up automatically when the stack is deleted.
+      Code:
+        ZipFile: |
+          import json
+          import boto3
+          import urllib.request
+
+          SNS = boto3.client('sns')
+
+
+          def send(event, context, status, data=None, reason=''):
+              body = json.dumps({
+                  'Status': status,
+                  'Reason': reason or f'See CloudWatch logs for {context.log_stream_name}',
+                  'PhysicalResourceId': event.get('PhysicalResourceId', 'SNSSubscriptions'),
+                  'StackId': event['StackId'],
+                  'RequestId': event['RequestId'],
+                  'LogicalResourceId': event['LogicalResourceId'],
+                  'Data': data or {},
+              }).encode()
+              req = urllib.request.Request(
+                  event['ResponseURL'],
+                  data=body,
+                  headers={'Content-Type': ''},
+                  method='PUT',
+              )
+              urllib.request.urlopen(req)
+
+
+          def parse_emails(raw):
+              """Accept a JSON array string or a bare comma-separated string."""
+              raw = (raw or '').strip()
+              if not raw or raw == '[]':
+                  return []
+              try:
+                  parsed = json.loads(raw)
+                  if isinstance(parsed, list):
+                      return [e.strip() for e in parsed if isinstance(e, str) and e.strip()]
+              except (json.JSONDecodeError, ValueError):
+                  pass
+              return [e.strip() for e in raw.split(',') if e.strip()]
+
+
+          def handler(event, context):
+              try:
+                  topic_arn = event['ResourceProperties']['TopicArn']
+                  emails = parse_emails(event['ResourceProperties'].get('EmailRecipients', '[]'))
+
+                  if event['RequestType'] in ('Create', 'Update'):
+                      if event['RequestType'] == 'Update':
+                          old_emails = set(parse_emails(
+                              event.get('OldResourceProperties', {}).get('EmailRecipients', '[]')
+                          ))
+                          new_emails = set(emails)
+                          to_remove = old_emails - new_emails
+                          if to_remove:
+                              paginator = SNS.get_paginator('list_subscriptions_by_topic')
+                              for page in paginator.paginate(TopicArn=topic_arn):
+                                  for sub in page['Subscriptions']:
+                                      if (sub['Protocol'] == 'email'
+                                              and sub['Endpoint'] in to_remove
+                                              and sub['SubscriptionArn'] != 'PendingConfirmation'):
+                                          SNS.unsubscribe(SubscriptionArn=sub['SubscriptionArn'])
+
+                      for email in emails:
+                          SNS.subscribe(TopicArn=topic_arn, Protocol='email', Endpoint=email)
+
+                  elif event['RequestType'] == 'Delete':
+                      # Best-effort: remove confirmed subscriptions so the topic
+                      # can be cleanly deleted with the stack.
+                      try:
+                          paginator = SNS.get_paginator('list_subscriptions_by_topic')
+                          for page in paginator.paginate(TopicArn=topic_arn):
+                              for sub in page['Subscriptions']:
+                                  if (sub['Protocol'] == 'email'
+                                          and sub['SubscriptionArn'] != 'PendingConfirmation'):
+                                      SNS.unsubscribe(SubscriptionArn=sub['SubscriptionArn'])
+                      except Exception:
+                          pass  # Don't block stack deletion
+
+                  send(event, context, 'SUCCESS')
+              except Exception as exc:
+                  send(event, context, 'FAILED', reason=str(exc))
+
+  AlertsTopicSubscriptions:
+    Type: AWS::CloudFormation::CustomResource
+    DependsOn: AlertsTopic
+    Properties:
+      ServiceToken: !GetAtt SubscriptionsHelperFunction.Arn
+      TopicArn: !Ref AlertsTopic
+      EmailRecipients: !Ref EmailRecipients
+
+  # ============================================================================
+  # CloudWatch log group (pre-created to avoid circular dependency and to
+  # set the retention policy before the function writes its first log)
+  # ============================================================================
+  LambdaLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: /aws/lambda/aws-service-monitor
+      RetentionInDays: 90
+
+  # ============================================================================
+  # IAM policies — attached as separate resources to mirror the modular
+  # Terraform structure and keep each policy individually inspectable
+  # ============================================================================
+
+  # DynamoDB access
+  LambdaDynamoDBPolicy:
+    Type: AWS::IAM::Policy
+    Properties:
+      PolicyName: lambda-dynamodb-policy
+      Roles:
+        - !Ref LambdaExecutionRole
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Action:
+              - dynamodb:GetItem
+              - dynamodb:PutItem
+              - dynamodb:UpdateItem
+              - dynamodb:Query
+              - dynamodb:Scan
+              - dynamodb:BatchWriteItem
+            Resource: !GetAtt ServiceRegistryTable.Arn
+          - Effect: Allow
+            Action:
+              - dynamodb:GetItem
+              - dynamodb:PutItem
+              - dynamodb:Query
+            Resource:
+              - !GetAtt ApprovedServicesTable.Arn
+              - !Sub "${ApprovedServicesTable.Arn}/index/approval-status-index"
+          - Effect: Allow
+            Action:
+              - dynamodb:GetItem
+              - dynamodb:PutItem
+              - dynamodb:UpdateItem
+              - dynamodb:Query
+            Resource:
+              - !GetAtt PendingRegionalServicesTable.Arn
+              - !Sub "${PendingRegionalServicesTable.Arn}/index/region-name-index"
+
+  # S3 baseline snapshots
+  LambdaS3Policy:
+    Type: AWS::IAM::Policy
+    Properties:
+      PolicyName: lambda-s3-baseline-policy
+      Roles:
+        - !Ref LambdaExecutionRole
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Action:
+              - s3:PutObject
+              - s3:PutObjectVersionTagging
+            Resource: !Sub "${BaselineSnapshotsBucket.Arn}/*"
+          - Effect: Allow
+            Action:
+              - s3:ListBucket
+            Resource: !GetAtt BaselineSnapshotsBucket.Arn
+
+  # SES email sending
+  LambdaSESPolicy:
+    Type: AWS::IAM::Policy
+    Properties:
+      PolicyName: lambda-ses-policy
+      Roles:
+        - !Ref LambdaExecutionRole
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Action:
+              - ses:SendEmail
+              - ses:SendRawEmail
+            Resource: "*"
+
+  # CloudWatch custom metrics
+  LambdaCloudWatchPolicy:
+    Type: AWS::IAM::Policy
+    Properties:
+      PolicyName: lambda-cloudwatch-metrics-policy
+      Roles:
+        - !Ref LambdaExecutionRole
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Action:
+              - cloudwatch:PutMetricData
+            Resource: "*"
+
+  # SNS alert publishing
+  LambdaSNSPolicy:
+    Type: AWS::IAM::Policy
+    Properties:
+      PolicyName: lambda-sns-policy
+      Roles:
+        - !Ref LambdaExecutionRole
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Action:
+              - sns:Publish
+            Resource: !Ref AlertsTopic
+
+  # CloudWatch Logs
+  LambdaLogsPolicy:
+    Type: AWS::IAM::Policy
+    Properties:
+      PolicyName: lambda-logs-policy
+      Roles:
+        - !Ref LambdaExecutionRole
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Action:
+              - logs:CreateLogGroup
+              - logs:CreateLogStream
+              - logs:PutLogEvents
+            Resource: !Sub "${LambdaLogGroup.Arn}:*"
+
+  # KMS decrypt for DynamoDB CMK
+  LambdaKMSPolicy:
+    Type: AWS::IAM::Policy
+    Properties:
+      PolicyName: lambda-kms-dynamodb-policy
+      Roles:
+        - !Ref LambdaExecutionRole
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Action:
+              - kms:GenerateDataKey
+              - kms:Decrypt
+            Resource: !GetAtt DynamoDBKMSKey.Arn
+
+  # Organizations / SCP — only when manage_scp_policy = true
+  LambdaSCPPolicy:
+    Type: AWS::IAM::Policy
+    Condition: ManageScp
+    Properties:
+      PolicyName: lambda-scp-policy
+      Roles:
+        - !Ref LambdaExecutionRole
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Action:
+              - organizations:ListPolicies
+            Resource: "*"
+            Condition:
+              StringEquals:
+                "organizations:PolicyType": SERVICE_CONTROL_POLICY
+          - Effect: Allow
+            Action:
+              - organizations:DescribePolicy
+              - organizations:UpdatePolicy
+            # Scope to the specific org when OrganizationId is provided;
+            # otherwise allow any policy ARN in the account (still scoped by type condition).
+            Resource: !If
+              - OrgIdProvided
+              - !Sub "arn:aws:organizations::${AWS::AccountId}:policy/${OrganizationId}/service_control_policy/p-*"
+              - !Sub "arn:aws:organizations::${AWS::AccountId}:policy/o-*/service_control_policy/p-*"
+            Condition:
+              StringEquals:
+                "organizations:PolicyType": SERVICE_CONTROL_POLICY
+
+# ==============================================================================
+# Outputs — all exported so the application stack can import them
+# ==============================================================================
+Outputs:
+
+  LambdaRoleArn:
+    Description: Lambda execution role ARN
+    Value: !GetAtt LambdaExecutionRole.Arn
+    Export:
+      Name: !Sub "${AWS::StackName}-LambdaRoleArn"
+
+  ServiceRegistryTableName:
+    Description: DynamoDB service registry table name
+    Value: !Ref ServiceRegistryTable
+    Export:
+      Name: !Sub "${AWS::StackName}-ServiceRegistryTableName"
+
+  ApprovedServicesTableName:
+    Description: DynamoDB approved-services table name
+    Value: !Ref ApprovedServicesTable
+    Export:
+      Name: !Sub "${AWS::StackName}-ApprovedServicesTableName"
+
+  PendingRegionalServicesTableName:
+    Description: DynamoDB pending-regional-services table name
+    Value: !Ref PendingRegionalServicesTable
+    Export:
+      Name: !Sub "${AWS::StackName}-PendingRegionalServicesTableName"
+
+  BaselineSnapshotsBucketName:
+    Description: S3 baseline snapshots bucket name
+    Value: !Ref BaselineSnapshotsBucket
+    Export:
+      Name: !Sub "${AWS::StackName}-BaselineSnapshotsBucketName"
+
+  AlertsTopicArn:
+    Description: SNS topic ARN for operational alerts
+    Value: !Ref AlertsTopic
+    Export:
+      Name: !Sub "${AWS::StackName}-AlertsTopicArn"
+
+  ManageScpPolicyValue:
+    Description: Whether SCP management is enabled ("true"/"false")
+    Value: !Ref ManageScpPolicy
+    Export:
+      Name: !Sub "${AWS::StackName}-ManageScpPolicyValue"
+
+  EnableServiceApprovalWorkflowValue:
+    Description: Whether the service approval workflow is enabled ("true"/"false")
+    Value: !Ref EnableServiceApprovalWorkflow
+    Export:
+      Name: !Sub "${AWS::StackName}-EnableServiceApprovalWorkflowValue"
+
+  EmailRecipientsValue:
+    Description: JSON array of notification email recipients
+    Value: !Ref EmailRecipients
+    Export:
+      Name: !Sub "${AWS::StackName}-EmailRecipientsValue"
+
+  SenderEmailValue:
+    Description: SES sender email address
+    Value: !Ref SenderEmail
+    Export:
+      Name: !Sub "${AWS::StackName}-SenderEmailValue"
+
+  ApprovalRecipientsResolved:
+    Description: >
+      Resolved approval recipients — ApprovalRecipients when provided,
+      otherwise falls back to EmailRecipients.
+    Value: !If
+      - HasApprovalRecipients
+      - !Ref ApprovalRecipients
+      - !Ref EmailRecipients
+    Export:
+      Name: !Sub "${AWS::StackName}-ApprovalRecipientsResolved"
