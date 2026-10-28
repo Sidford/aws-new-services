@@ -5,7 +5,11 @@ data "aws_iam_role" "existing" {
 }
 
 # Organization ID needed to construct valid SCP ARNs (policy/<org-id>/service_control_policy/<policy-id>)
-data "aws_organizations_organization" "current" {}
+# Only fetched when SCP management is enabled — avoids requiring organizations:DescribeOrganization
+# in notifications-only deployments or from member accounts.
+data "aws_organizations_organization" "current" {
+  count = var.manage_scp_policy ? 1 : 0
+}
 
 # No role creation here - role is created at root module with permission boundary
 # This module only attaches policies to the existing role
@@ -63,7 +67,10 @@ resource "aws_iam_role_policy" "lambda_dynamodb_policy" {
 }
 
 # IAM policy for Lambda to access Organizations and SCP
+# Only created when SCP management is enabled — withheld in notifications-only deployments.
 resource "aws_iam_role_policy" "lambda_scp_policy" {
+  count = var.manage_scp_policy ? 1 : 0
+
   name = "lambda-scp-policy"
   role = local.lambda_role_id
 
@@ -83,7 +90,7 @@ resource "aws_iam_role_policy" "lambda_scp_policy" {
       {
         Effect   = "Allow"
         Action   = ["organizations:DescribePolicy", "organizations:UpdatePolicy"]
-        Resource = "arn:aws:organizations::${var.aws_account_id}:policy/${data.aws_organizations_organization.current.id}/service_control_policy/p-*"
+        Resource = "arn:aws:organizations::${var.aws_account_id}:policy/${data.aws_organizations_organization.current[0].id}/service_control_policy/p-*"
         Condition = {
           StringEquals = {
             "organizations:PolicyType" = "SERVICE_CONTROL_POLICY"

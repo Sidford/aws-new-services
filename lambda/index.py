@@ -1541,11 +1541,6 @@ def lambda_handler(event, context):
         logger.info(f"Tracked services: {len(tracked_services)}")
         logger.info(f"New services: {len(new_services)}")
 
-        # Load approved services (excluded from SCP deny list)
-        approved_services = get_approved_services()
-        if approved_services:
-            logger.info(f"Approved services: {len(approved_services)}")
-
         if new_services:
             # Load known AWS services for catalog validation (WAF finding fix)
             known_services = get_known_aws_services()
@@ -1583,6 +1578,8 @@ def lambda_handler(event, context):
 
             # Filter out approved services — they are tracked but not added to the SCP deny list
             approved_services = get_approved_services()
+            if approved_services:
+                logger.info(f"Approved services: {len(approved_services)}")
             approved_from_new = [s for s in new_services_list if s in approved_services]
             services_for_scp = [s for s in new_services_list if s not in approved_services]
 

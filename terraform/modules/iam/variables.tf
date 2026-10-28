@@ -3,6 +3,12 @@ variable "aws_account_id" {
   type        = string
 }
 
+variable "manage_scp_policy" {
+  description = "Whether to create Organizations/SCP IAM permissions (set false for notifications-only mode)"
+  type        = bool
+  default     = true
+}
+
 variable "existing_role_id" {
   description = "ID of existing Lambda IAM role (if provided, role creation is skipped)"
   type        = string
