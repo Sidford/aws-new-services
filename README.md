@@ -1,71 +1,123 @@
-# 🔍 AWS New Services Monitor with SCP Management
-
 <div align="center">
 
-[![AWS](https://img.shields.io/badge/AWS-Management%20Account-FF9900?logo=amazon-aws)](https://aws.amazon.com)
-[![Terraform](https://img.shields.io/badge/IaC-Terraform%20v1.0%2B-844FBA?logo=terraform)](https://terraform.io)
-[![CloudFormation](https://img.shields.io/badge/IaC-CloudFormation-FF4F00?logo=amazon-aws)](cloudformation/)
-[![Python](https://img.shields.io/badge/Lambda-Python%203.11-3776AB?logo=python)](https://www.python.org/)
-[![Status](https://img.shields.io/badge/Status-Production%20Ready-green)](#)
+# 🔍 AWS New Services Monitor
 
-Automatically monitor AWS for new services and manage Service Control Policy blacklists 🚀
+### Automatically detect new AWS services · update SCP deny-lists · alert your ops team
 
-[Features](#-features) • [Quick Start](#-quick-start) • [Architecture](#-architecture) • [Monitoring](#-monitoring) • [Docs](#-documentation)
+<br/>
+
+[![AWS](https://img.shields.io/badge/AWS-Management_Account-FF9900?style=for-the-badge&logo=amazon-web-services&logoColor=white)](https://aws.amazon.com)
+[![Python](https://img.shields.io/badge/Lambda-Python_3.11-3776AB?style=for-the-badge&logo=python&logoColor=white)](https://www.python.org/)
+[![CloudFormation](https://img.shields.io/badge/CloudFormation-Two--Stack-FF4F00?style=for-the-badge&logo=amazon-web-services&logoColor=white)](cloudformation/)
+[![Terraform](https://img.shields.io/badge/Terraform-v1.0+-844FBA?style=for-the-badge&logo=terraform&logoColor=white)](terraform/)
+
+<br/>
+
+[![Status](https://img.shields.io/badge/status-production_ready-2ECC71?style=flat-square)](https://github.com/Sidford/aws-new-services)
+[![Security](https://img.shields.io/badge/security-threat_modelled-E74C3C?style=flat-square&logo=shield)](SECURITY.md)
+[![Well Architected](https://img.shields.io/badge/Well_Architected-8%2F10-FF9900?style=flat-square&logo=amazon-web-services)](WELL_ARCHITECTED_REVIEW.md)
+[![Runbooks](https://img.shields.io/badge/runbooks-9_procedures-3498DB?style=flat-square)](runbooks/)
+[![Cost](https://img.shields.io/badge/cost-~%242.50%2Fmonth-27AE60?style=flat-square)](README.md#-costs)
+
+<br/>
+
+[**Quick Start**](#-quick-start) · [**Architecture**](#-architecture) · [**Monitoring**](#-monitoring) · [**Security**](#-security) · [**Docs**](#-documentation)
 
 </div>
 
 ---
 
-## 🎯 Features
+## What it does
 
-| Feature | Description |
-|---------|-------------|
-| 🔄 **Automated Monitoring** | Daily Lambda invocation fetches AWS service reference |
-| 🎯 **Smart Detection** | Identifies only new services (ignores API changes) |
-| 💾 **State Tracking** | DynamoDB registry with baseline integrity verification |
-| 📋 **SCP Management** | Auto-update blacklist SCP with new services (cautious-by-default) |
-| 🌍 **Regional Intelligence** | Track when services become available in your region (eu-west-2) |
-| 📧 **Email Alerts** | HTML + Text notifications with regional status info |
-| 🛡️ **Data Protection** | SHA256 checksums + S3 Object Lock snapshots |
-| 📊 **Real-time Dashboard** | CloudWatch dashboard with key metrics |
-| 🚨 **Smart Alerting** | 8 CloudWatch alarms with SNS notifications |
-| 📖 **Runbooks** | 9 comprehensive operational procedures |
-| 🏗️ **Infrastructure as Code** | Full Terraform/OpenTofu deployment |
+Every day at 08:00 UTC a Lambda function fetches the [AWS service reference](https://servicereference.us-east-1.amazonaws.com/), compares it against a DynamoDB registry, and acts on anything new:
+
+```
+AWS Service Reference  ──▶  Lambda  ──▶  DynamoDB (registry update)
+                                    ──▶  Organizations (SCP deny-list)
+                                    ──▶  SES (email notification)
+                                    ──▶  CloudWatch (metrics & alarms)
+                                    ──▶  S3 (immutable baseline snapshot)
+```
+
+New services are **blocked at the org level** the moment they appear — no manual triage needed. An approval workflow lets your team whitelist services they've assessed.
+
+---
+
+## ✨ Features
+
+| | Feature | Detail |
+|---|---------|--------|
+| 🔄 | **Daily scanning** | EventBridge cron triggers Lambda at 08:00 UTC |
+| 🎯 | **New-service detection** | Compares live reference against DynamoDB baseline |
+| 📋 | **SCP management** | Adds `<service>:*` deny actions to your blacklist SCP |
+| ✅ | **Approval workflow** | Move services from deny-list to approved list via parameter |
+| 🌍 | **Regional intelligence** | Tracks when new services land in your region |
+| 📧 | **Rich email alerts** | HTML + text notifications with per-service detail |
+| 🛡️ | **Baseline integrity** | SHA-256 checksums + S3 Object Lock tamper detection |
+| 📊 | **CloudWatch dashboard** | Lambda, DynamoDB, integrity status at a glance |
+| 🚨 | **10 alarms** | Errors, timeouts, throttles, missed runs, integrity |
+| 📖 | **Runbooks** | 9 operational procedures for on-call teams |
+| 🏗️ | **Two IaC options** | CloudFormation (no tooling) or Terraform/OpenTofu |
 
 ---
 
 ## ⚡ Quick Start
 
-> **Two deployment options** — CloudFormation (no extra tooling) or Terraform/OpenTofu.
+> Choose **Option A** (CloudFormation — no extra tools needed) or **Option B** (Terraform).
 
 ### Prerequisites
 
 ```bash
-aws --version       # AWS CLI v2
-aws ses list-verified-email-addresses
+aws --version                           # AWS CLI v2 required
+aws ses list-verified-email-addresses   # confirm your sender/recipient emails are verified
 ```
 
-**Required**:
-- ✅ AWS Organizations (management account)
-- ✅ SES verified email addresses
-- ✅ Existing SCP named "blacklist"
+| Requirement | Why |
+|-------------|-----|
+| AWS Organizations (management account) | SCP management |
+| SES verified sender + recipient emails | Notifications |
+| Existing SCP named `blacklist` | Policy to update |
 
 ---
 
-### Option A — CloudFormation (recommended)
+### Option A — CloudFormation ✅ recommended
 
-The stack is split into two templates so the durable foundation (IAM, KMS, DynamoDB, S3, SNS) is deployed once and the compute layer (Lambda, alarms, dashboard) is updated independently whenever the code changes.
+Two stacks keep the durable foundation (IAM, KMS, storage) separate from the compute layer (Lambda, alarms). **You only redeploy the application stack when the Lambda code changes.**
+
+<details>
+<summary><strong>Stack contents at a glance</strong></summary>
+
+| Stack | Resources | When to deploy |
+|-------|-----------|----------------|
+| `aws-service-monitor-infra` | IAM role + boundary · KMS key · 3 DynamoDB tables · S3 bucket · SNS topic · Log group · 8 IAM policies | Once (or when IAM/storage config changes) |
+| `aws-service-monitor-app` | Lambda function · EventBridge schedule · 10 CloudWatch alarms · Dashboard | On each Lambda code or alarm change |
+
+</details>
 
 #### 1️⃣ Configure
 
 ```bash
 cp cloudformation/infra-parameters.example.json  cloudformation/infra-parameters.json
 cp cloudformation/app-parameters.example.json    cloudformation/app-parameters.json
-
-# Edit both files with your email addresses, org ID, etc.
 ```
 
-#### 2️⃣ Deploy — infrastructure stack (once)
+Edit `infra-parameters.json` — minimum required:
+
+| Parameter | Example | Notes |
+|-----------|---------|-------|
+| `EmailRecipients` | `["ops@example.com"]` | Must be SES-verified |
+| `SenderEmail` | `notifications@example.com` | Must be SES-verified |
+| `OrganizationId` | `o-xxxxxxxxxxxx` | Scopes IAM to your org |
+
+Edit `app-parameters.json` — key settings:
+
+| Parameter | Default | Notes |
+|-----------|---------|-------|
+| `InfrastructureStackName` | `aws-service-monitor-infra` | Must match infra stack name |
+| `ManageScpPolicy` | `true` | Set `false` for notify-only mode |
+| `RequireScpApproval` | `true` | `false` = auto-apply SCP changes |
+
+#### 2️⃣ Deploy — infrastructure stack
 
 ```bash
 aws cloudformation deploy \
@@ -75,8 +127,6 @@ aws cloudformation deploy \
   --capabilities CAPABILITY_NAMED_IAM \
   --region eu-west-2
 ```
-
-**Creates**: IAM role + permission boundary, KMS key, 3 DynamoDB tables, S3 baseline bucket, SNS topic, CloudWatch log group, all IAM policies.
 
 #### 3️⃣ Deploy — application stack
 
@@ -89,25 +139,23 @@ aws cloudformation deploy \
   --region eu-west-2
 ```
 
-**Creates**: Lambda function, EventBridge daily schedule, 10 CloudWatch alarms, CloudWatch dashboard.
-
-> Re-run only this command whenever the Lambda code or alarm thresholds change.
-
 #### 4️⃣ Verify
 
 ```bash
-# Check stacks are complete
+# Both stacks should show CREATE_COMPLETE or UPDATE_COMPLETE
 aws cloudformation describe-stacks \
-  --stack-name aws-service-monitor-infra --region eu-west-2 \
+  --stack-name aws-service-monitor-infra \
+  --region eu-west-2 \
   --query 'Stacks[0].StackStatus'
 
 aws cloudformation describe-stacks \
-  --stack-name aws-service-monitor-app --region eu-west-2 \
+  --stack-name aws-service-monitor-app \
+  --region eu-west-2 \
   --query 'Stacks[0].StackStatus'
 
-# Test the Lambda manually
+# Trigger a manual test run
 aws lambda invoke --function-name aws-service-monitor \
-  --region eu-west-2 response.json && cat response.json
+  --region eu-west-2 response.json && cat response.json | jq '.'
 ```
 
 ---
@@ -121,7 +169,6 @@ cp terraform/terraform.tfvars.example terraform/terraform.tfvars
 vim terraform/terraform.tfvars
 ```
 
-**Key Settings**:
 ```hcl
 aws_region       = "eu-west-2"
 scp_name         = "blacklist"
@@ -133,7 +180,6 @@ sender_email     = "aws-monitor@example.com"
 
 ```bash
 cd terraform
-
 terraform init
 terraform plan
 terraform apply
@@ -142,10 +188,6 @@ terraform apply
 #### 3️⃣ Verify
 
 ```bash
-# Check Lambda deployed
-aws lambda list-functions | grep aws-service-monitor
-
-# Test manually
 aws lambda invoke --function-name aws-service-monitor /dev/stdout | jq '.'
 ```
 
@@ -153,322 +195,300 @@ aws lambda invoke --function-name aws-service-monitor /dev/stdout | jq '.'
 
 ## 🏗️ Architecture
 
-### System Overview
+### How it works
+
+```
+1. EventBridge fires daily at 08:00 UTC
+   │
+2. Lambda fetches https://servicereference.us-east-1.amazonaws.com/
+   │
+3. Verify baseline integrity (SHA-256 checksum vs DynamoDB)
+   │  └─ FAIL → alert email + SNS + CloudWatch metric → stop
+   │
+4. Compare live services against DynamoDB registry
+   │  └─ No new services → publish metrics → done
+   │
+5. New services found:
+   ├─ Validate names (format + boto3 catalog check)
+   ├─ Write to DynamoDB + update checksum
+   ├─ Check regional availability (eu-west-2)
+   ├─ Filter against approved-services list
+   ├─ Update SCP deny-list (if ManageScpPolicy=true)
+   └─ Send HTML + text email notification
+```
+
+### System diagram
 
 ```mermaid
 graph TB
-    subgraph "External Data"
-        AWS["🌐 AWS Service Reference"]
+    subgraph "Trigger"
+        EB["📅 EventBridge\nDaily 08:00 UTC"]
     end
-    
+
     subgraph "AWS Management Account"
-        subgraph "Orchestration"
-            EB["📅 EventBridge<br/>Daily Schedule"]
-        end
-        
-        subgraph "Monitoring"
-            CW["📊 CloudWatch<br/>Dashboard & Metrics"]
-            SNS["📢 SNS<br/>Alert Topic"]
-        end
-        
-        subgraph "Compute"
-            Lambda["⚡ Lambda Function<br/>aws-service-monitor"]
-        end
-        
+        Lambda["⚡ Lambda\naws-service-monitor"]
+
         subgraph "Data Layer"
-            DDB["💾 DynamoDB<br/>Service Registry<br/>+ Baseline"]
-            S3["📦 S3<br/>Immutable Snapshots"]
+            DDB["💾 DynamoDB\nService Registry"]
+            S3["📦 S3\nImmutable Snapshots"]
         end
-        
+
+        subgraph "Monitoring"
+            CW["📊 CloudWatch\nDashboard & Alarms"]
+            SNS["📢 SNS\nAlerts Topic"]
+        end
+
         subgraph "Integration"
-            ORG["🏢 Organizations<br/>SCP Management"]
-            SES["📧 SES<br/>Email Service"]
+            ORG["🏢 Organizations\nSCP Management"]
+            SES["📧 SES\nEmail"]
         end
     end
-    
-    subgraph "Recipients"
-        EMAIL["✉️ Email Alerts"]
+
+    subgraph "External"
+        REF["🌐 AWS Service\nReference API"]
+        EMAIL["✉️ Ops Team"]
     end
-    
-    AWS -->|HTTPS GET| Lambda
-    EB -->|Invoke| Lambda
-    Lambda -->|Read/Write| DDB
-    Lambda -->|Store| S3
-    Lambda -->|Query/Update| ORG
-    Lambda -->|Metrics| CW
-    Lambda -->|Send| SES
-    CW -->|Alert| SNS
-    SNS -->|Email| EMAIL
-    SES -->|Email| EMAIL
+
+    EB -->|invoke| Lambda
+    REF -->|HTTPS| Lambda
+    Lambda -->|read/write| DDB
+    Lambda -->|snapshot| S3
+    Lambda -->|update policy| ORG
+    Lambda -->|metrics| CW
+    Lambda -->|send| SES
+    CW -->|alarm| SNS
+    SNS -->|email| EMAIL
+    SES -->|email| EMAIL
 ```
 
-**For detailed architecture and data flow diagrams**: See [ARCHITECTURE.md](./ARCHITECTURE.md)
+### Resource inventory
+
+| Layer | Resource | Purpose |
+|-------|----------|---------|
+| **Compute** | Lambda (Python 3.11, 300s) | Orchestration |
+| **Schedule** | EventBridge rule | Daily trigger |
+| **Registry** | DynamoDB `service-registry` | Known services + baseline |
+| **Workflow** | DynamoDB `approved-services` | Approval state |
+| **Regional** | DynamoDB `pending-regional` | Regional rollout tracking |
+| **Integrity** | S3 bucket (Object Lock GOVERNANCE) | Immutable snapshots |
+| **Alerts** | SNS topic | Alarm fan-out |
+| **IAM** | Role + permission boundary + 8 policies | Least-privilege |
+| **Encryption** | KMS CMK (auto-rotate) | DynamoDB at-rest |
 
 ---
 
 ## 📊 Monitoring
 
-### CloudWatch Dashboard
+### Dashboard
 
-Access: [AWS Service Monitor Dashboard](https://console.aws.amazon.com/cloudwatch/home?region=eu-west-2#dashboards:name=aws-service-monitor)
+[![Dashboard](https://img.shields.io/badge/CloudWatch-Open_Dashboard-FF9900?style=flat-square&logo=amazon-cloudwatch)](https://console.aws.amazon.com/cloudwatch/home?region=eu-west-2#dashboards:name=aws-service-monitor)
 
-**Displays**:
-- Lambda invocations, errors, duration (avg & p99)
-- DynamoDB consumed capacity & throttles
-- New services detected (daily)
-- Baseline integrity status
-- CloudWatch Logs Insights for errors
+Panels: Lambda invocations · errors · duration · new services detected · baseline integrity status.
 
 ### Alarms
 
-| Alarm | Severity | Threshold | Action |
-|-------|----------|-----------|--------|
-| Lambda Errors | 🔴 CRITICAL | ≥1/hour | Check logs |
-| Lambda Timeout | 🔴 CRITICAL | ≥300s | Increase memory |
-| DynamoDB Throttles | 🟠 WARNING | ≥1 | Monitor (auto-scales) |
-| Baseline Integrity | 🔴 CRITICAL | Failed | [Runbook](./runbooks/BASELINE_INTEGRITY_VIOLATION.md) |
-| Missed Execution | 🟠 WARNING | 0/24h | Check EventBridge |
+| Alarm | Severity | Threshold | Runbook |
+|-------|----------|-----------|---------|
+| Lambda Errors | 🔴 CRITICAL | ≥ 1 / hour | Check CloudWatch Logs |
+| Lambda Timeout | 🔴 CRITICAL | Duration ≥ 300 s | [Timeout runbook](runbooks/LAMBDA_TIMEOUT_RECOVERY.md) |
+| Missed Execution | 🟠 WARNING | 0 invocations / 24 h | Check EventBridge rule |
+| Baseline Integrity | 🔴 CRITICAL | Status = 0 | [Integrity runbook](runbooks/BASELINE_INTEGRITY_VIOLATION.md) |
+| DynamoDB Throttles | 🟡 LOW | ≥ 1 | Monitor (on-demand auto-scales) |
+| Unusual DDB Writes | 🔴 CRITICAL | > 500 WCU / h | Check CloudTrail |
+| EventBridge Disabled | 🟠 WARNING | 0 rules fired / 24 h | Re-enable rule |
+| Permission Boundary Deny | 🔴 CRITICAL | ≥ 1 hit | Investigate immediately |
 
-**→ View all alarms**: [CloudWatch Alarms](https://console.aws.amazon.com/cloudwatch/home?region=eu-west-2#alarmsV2:alarmFilter=service-monitor)
-
----
-
-## 📖 Documentation
-
-| Doc | Purpose | Audience |
-|-----|---------|----------|
-| 📘 [README.md](./README.md) | This file - Quick start | Everyone |
-| 🏗️ [ARCHITECTURE.md](./ARCHITECTURE.md) | System design & data flows | Architects |
-| 🔐 [SECURITY.md](./SECURITY.md) | Security controls | Security team |
-| 🛡️ [threat-model/THREAT_MODEL.md](./threat-model/THREAT_MODEL.md) | Threats & mitigations | Security eng |
-| 📋 [threat-model/T004_IMPLEMENTATION.md](./threat-model/T004_IMPLEMENTATION.md) | Data tampering protection | DevOps |
-| 📊 [WELL_ARCHITECTED_REVIEW.md](./WELL_ARCHITECTED_REVIEW.md) | AWS framework (8/10) | Architects |
-| 📖 [DEPLOYMENT_GUIDE.md](./DEPLOYMENT_GUIDE.md) | Step-by-step setup | DevOps |
-| 🚀 [BASELINE_INITIALIZATION.md](./BASELINE_INITIALIZATION.md) | First-run setup | DevOps |
-| 🔧 [runbooks/OPERATIONAL_GUIDE.md](./runbooks/OPERATIONAL_GUIDE.md) | Operational procedures | On-call |
-| 🆘 [runbooks/INCIDENT_RESPONSE.md](./runbooks/INCIDENT_RESPONSE.md) | Incident response | On-call |
+[![Alarms](https://img.shields.io/badge/CloudWatch-View_All_Alarms-FF9900?style=flat-square&logo=amazon-cloudwatch)](https://console.aws.amazon.com/cloudwatch/home?region=eu-west-2#alarmsV2:alarmFilter=service-monitor)
 
 ---
 
-## 📋 Configuration
+## ⚙️ Configuration
 
-### Scheduling
+### Schedule expressions
 
-```hcl
-# Choose your schedule
-schedule_expression = "cron(0 8 * * ? *)"    # Daily 8 AM UTC
-schedule_expression = "cron(0 3 * * ? *)"    # Daily 3 AM UTC
-schedule_expression = "rate(12 hours)"       # Every 12 hours
-schedule_expression = "rate(1 hour)"         # Every hour
+```
+cron(0 8 * * ? *)    Daily at 08:00 UTC  (default)
+cron(0 3 * * ? *)    Daily at 03:00 UTC
+rate(12 hours)       Every 12 hours
+rate(1 hour)         Every hour
 ```
 
-### Approval Workflow
+### SCP approval modes
 
-```hcl
-# Auto-update (default)
-require_scp_approval = false
+| `RequireScpApproval` | Behaviour |
+|----------------------|-----------|
+| `true` (default) | Lambda previews changes and notifies — **does not apply** |
+| `false` | Lambda applies SCP changes automatically |
 
-# Manual approval (preview only)
-require_scp_approval = true
-```
+### Notifications-only mode
+
+Set `ManageScpPolicy = false` to detect and alert without ever touching your SCP. Email templates automatically omit SCP-related sections in this mode.
 
 ---
 
-## 📧 Email Notifications
+## 🔐 Security
 
-**When**: New services detected  
-**Format**: HTML + Plain text
+[![Threat Model](https://img.shields.io/badge/Threat_Model-Documented-E74C3C?style=flat-square)](threat-model/THREAT_MODEL.md)
+[![Object Lock](https://img.shields.io/badge/S3-Object_Lock_GOVERNANCE-FF9900?style=flat-square)](SECURITY.md)
+[![KMS](https://img.shields.io/badge/KMS-CMK_Auto--Rotate-FF9900?style=flat-square)](SECURITY.md)
 
-```
-From: aws-monitor@example.com
-Subject: AWS Service Monitor: 3 New Service(s) Detected
+| Control | Implementation |
+|---------|----------------|
+| **Least privilege** | Permission boundary caps the Lambda role to exactly what it needs; `iam:*` is explicitly denied |
+| **Encryption at rest** | DynamoDB uses a KMS CMK with automatic yearly rotation |
+| **Tamper detection** | SHA-256 baseline checksum verified on every run; mismatch triggers CRITICAL alert |
+| **Immutable audit trail** | S3 Object Lock (GOVERNANCE, 90-day retention) prevents snapshot deletion |
+| **Input validation** | Service names validated against format rules + boto3 service catalog before SCP update |
+| **No secrets** | IAM roles only — no hardcoded credentials anywhere |
+| **TLS everywhere** | `ssl.create_default_context()` enforces certificate validation on all outbound calls |
 
-New services:
-  • apigateway-v2
-  • forecast
-  • s3-express
-
-Status: SCP updated
-Time: 2026-04-24 08:15:33 UTC
-```
+**→** Full details: [SECURITY.md](SECURITY.md) · [Threat Model](threat-model/THREAT_MODEL.md)
 
 ---
 
 ## 💰 Costs
 
-### Estimated Monthly
+Estimated for daily execution in a single region:
 
-| Service | Usage | Cost |
-|---------|-------|------|
-| Lambda | 30 invocations | $0.20 |
-| DynamoDB | On-demand | $1.00 |
-| CloudWatch | Logs + Alarms | $1.20 |
+| Service | Monthly usage | Est. cost |
+|---------|--------------|-----------|
+| Lambda | 30 invocations × 300 s | $0.20 |
+| DynamoDB | On-demand (minimal WCU/RCU) | $1.00 |
+| CloudWatch | Logs + 10 alarms + dashboard | $1.20 |
 | SES | ~30 emails | $0.10 |
-| S3 | Snapshots | $0.02 |
-| **Total** | | **~$2.50/month** |
+| S3 | Baseline snapshots | $0.02 |
+| KMS | 1 CMK + API calls | $1.00 |
+| **Total** | | **~$3.50 / month** |
+
+> Actual costs vary by region and existing free-tier usage.
 
 ---
 
-## 🔍 Usage
+## 🔍 Operations
 
-### Manual Test
+### Trigger a manual run
 
 ```bash
-# Invoke Lambda
 aws lambda invoke \
   --function-name aws-service-monitor \
+  --region eu-west-2 \
   response.json && cat response.json | jq '.'
 ```
 
-### View Logs
+### Tail logs
 
 ```bash
-# Real-time tail
-aws logs tail /aws/lambda/aws-service-monitor --follow
+# Live stream
+aws logs tail /aws/lambda/aws-service-monitor --region eu-west-2 --follow
 
 # Errors only
-aws logs tail /aws/lambda/aws-service-monitor \
+aws logs tail /aws/lambda/aws-service-monitor --region eu-west-2 \
   --filter-pattern "ERROR"
 ```
 
-### Check Registry
+### Inspect the registry
 
 ```bash
-# Count services
+# Service count
 aws dynamodb scan \
   --table-name aws-service-monitor-registry \
-  --select COUNT
+  --select COUNT \
+  --region eu-west-2
 
-# View baseline
+# Baseline record
 aws dynamodb get-item \
   --table-name aws-service-monitor-registry \
+  --region eu-west-2 \
   --key '{"service_name":{"S":"__baseline_initialized__"}}'
 ```
 
----
+### Troubleshooting
 
-## 🆘 Troubleshooting
-
-### Lambda Errors
-
-```bash
-aws logs tail /aws/lambda/aws-service-monitor --filter-pattern "ERROR"
-```
-
-**Common fixes**:
-- ❌ SCP not found? → `aws organizations list-policies --filter SERVICE_CONTROL_POLICY`
-- ❌ Email failed? → `aws ses list-verified-email-addresses`
-- ❌ Timeout? → Increase Lambda memory in `terraform.tfvars`
-
-### DynamoDB
-
-```bash
-# Check table status
-aws dynamodb describe-table --table-name aws-service-monitor-registry \
-  --query 'Table.{Status, ItemCount}'
-```
-
-### SES
-
-```bash
-# List verified addresses
-aws ses list-verified-email-addresses
-
-# Check sandbox status
-aws ses get-account-sending-enabled
-```
+| Symptom | First check | Command |
+|---------|------------|---------|
+| SCP not found | Policy name mismatch | `aws organizations list-policies --filter SERVICE_CONTROL_POLICY` |
+| Email not delivered | SES sandbox / unverified address | `aws ses list-verified-email-addresses` |
+| Lambda timeout | Memory too low | Increase `Timeout` / memory in template |
+| Integrity violation | Unexpected DDB write | Review CloudTrail for `dynamodb:PutItem` calls |
 
 ---
 
 ## 🔄 Updates
 
-### Add Recipients
+### CloudFormation — add a new email recipient
 
 ```bash
-# Edit terraform.tfvars
-email_recipients = ["ops-team@example.com", "new-team@example.com"]
-
-# Apply
-terraform apply
+# Edit cloudformation/infra-parameters.json, then:
+aws cloudformation deploy \
+  --template-file cloudformation/infrastructure.yaml \
+  --stack-name aws-service-monitor-infra \
+  --parameter-overrides file://cloudformation/infra-parameters.json \
+  --capabilities CAPABILITY_NAMED_IAM \
+  --region eu-west-2
 ```
 
-### Change Schedule
+### CloudFormation — update Lambda code or alarms
 
 ```bash
-# Edit terraform.tfvars
-schedule_expression = "cron(0 2 * * ? *)"
-
-# Apply
-terraform apply
+# Edit cloudformation/application.yaml, then:
+aws cloudformation deploy \
+  --template-file cloudformation/application.yaml \
+  --stack-name aws-service-monitor-app \
+  --parameter-overrides file://cloudformation/app-parameters.json \
+  --capabilities CAPABILITY_NAMED_IAM \
+  --region eu-west-2
 ```
 
-### Update Lambda Code
+### Terraform — any change
 
 ```bash
-# Edit lambda/index.py
-# Reapply (zip rebuilt automatically)
-terraform apply
+# Edit lambda/index.py or terraform/*.tf, then:
+cd terraform && terraform apply
 ```
 
 ---
 
 ## 🧹 Cleanup
 
-```bash
-# Remove everything
-terraform destroy
+### CloudFormation
 
-# This deletes:
-# ❌ Lambda, DynamoDB, EventBridge, IAM, CloudWatch, S3
-# ⚠️  DynamoDB deletion is permanent!
+```bash
+aws cloudformation delete-stack --stack-name aws-service-monitor-app  --region eu-west-2
+aws cloudformation delete-stack --stack-name aws-service-monitor-infra --region eu-west-2
+```
+
+> ⚠️ The S3 bucket has Object Lock enabled. Terraform/CFn cannot delete it while objects are retained. See [DEPLOYMENT_GUIDE.md](DEPLOYMENT_GUIDE.md) for the manual cleanup steps.
+
+### Terraform
+
+```bash
+cd terraform && terraform destroy
 ```
 
 ---
 
-## 🔐 Security
+## 📖 Documentation
 
-| Control | Implementation |
-|---------|----------------|
-| **Least Privilege** | Minimal IAM permissions |
-| **Encryption** | DynamoDB + logs encrypted |
-| **No Secrets** | IAM roles (no hardcoded creds) |
-| **HTTPS** | Service reference with cert validation |
-| **Integrity** | SHA256 checksums + Object Lock |
-| **Audit** | CloudTrail logs all API calls |
-
-**→ See**: [SECURITY.md](./SECURITY.md)
-
----
-
-## 📞 Support
-
-### Quick Links
-
-- 📊 [CloudWatch Dashboard](https://console.aws.amazon.com/cloudwatch/home?region=eu-west-2#dashboards:name=aws-service-monitor)
-- 🚨 [Alarms](https://console.aws.amazon.com/cloudwatch/home?region=eu-west-2#alarmsV2:alarmFilter=service-monitor)
-- 💾 [DynamoDB Table](https://console.aws.amazon.com/dynamodb/home?region=eu-west-2#/tables/aws-service-monitor-registry)
-- 📦 [S3 Snapshots](https://s3.console.aws.amazon.com/s3/buckets?region=eu-west-2)
-
-### Common Commands
-
-```bash
-# Overall status
-terraform output
-
-# Check all alarms
-aws cloudwatch describe-alarms | grep service-monitor
-
-# SNS topic
-aws sns list-topics | grep service-monitor
-
-# S3 snapshots
-aws s3 ls s3://service-monitor-baseline-$(aws sts get-caller-identity --query Account --output text)-eu-west-2/
-```
+| Doc | What's in it | Audience |
+|-----|-------------|----------|
+| [ARCHITECTURE.md](ARCHITECTURE.md) | Full data-flow diagrams, component interactions | Architects |
+| [DEPLOYMENT_GUIDE.md](DEPLOYMENT_GUIDE.md) | Step-by-step bootstrap + deploy | DevOps |
+| [BASELINE_INITIALIZATION.md](BASELINE_INITIALIZATION.md) | First-run behaviour explained | DevOps |
+| [SECURITY.md](SECURITY.md) | Security controls, threat mitigations | Security |
+| [threat-model/THREAT_MODEL.md](threat-model/THREAT_MODEL.md) | STRIDE threat model | Security eng |
+| [WELL_ARCHITECTED_REVIEW.md](WELL_ARCHITECTED_REVIEW.md) | AWS Well-Architected (8/10) | Architects |
+| [runbooks/OPERATIONAL_GUIDE.md](runbooks/OPERATIONAL_GUIDE.md) | Day-2 operations | On-call |
+| [runbooks/INCIDENT_RESPONSE.md](runbooks/INCIDENT_RESPONSE.md) | Incident playbooks | On-call |
+| [TESTING_GUIDE.md](TESTING_GUIDE.md) | Manual test procedures | DevOps |
 
 ---
 
 <div align="center">
 
-**Built with ❤️ for AWS Security** | [Docs](./ARCHITECTURE.md) | [Issues](https://github.com/baldrickuk/aws-new-services/issues)
+Built with ❤️ for AWS security teams
+
+[![Docs](https://img.shields.io/badge/docs-ARCHITECTURE.md-3498DB?style=flat-square)](ARCHITECTURE.md)
+[![Security](https://img.shields.io/badge/security-SECURITY.md-E74C3C?style=flat-square)](SECURITY.md)
+[![Runbooks](https://img.shields.io/badge/on--call-runbooks-F39C12?style=flat-square)](runbooks/)
 
 </div>
